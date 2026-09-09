@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { playSfx, primeSfx } from '@renderer/lib/sfx'
+import { fanoutStillWorking } from '@renderer/lib/completionAlert'
 import {
   addEdge,
   applyEdgeChanges,
@@ -11968,10 +11969,19 @@ export function Canvas() {
       if (e.account) cs.setAccount(e.nodeId, { ...e.account, remote: observationIsRemote(originOf(e.nodeId)) })
       const agentLabel = agentConfig(e.agentId)?.label ?? 'Agent'
       // "<folder> — Claude finished" + last assistant message as the body.
-      const alert = (statusText: string, fallbackBody: string, sound: 'done' | 'needsYou') => {
+      const alert = (
+        statusText: string,
+        fallbackBody: string,
+        sound: 'done' | 'needsYou',
+        opts?: { quiet?: boolean }
+      ) => {
         // Unread unless the user is actively in this node's terminal (focused window +
         // this node is the active terminal). So a finish while you're in another terminal,
         // or with nothing focused, still flags unread.
+        //
+        // `opts.quiet` reaches this function BELOW this block on purpose (issue #708): it silences
+        // the two INTERRUPTS (chime, OS notification) and never the unread record or its ack. See
+        // `fanoutStillWorking` — a dot is a different fact from a chime.
         const watching = document.hasFocus() && cs.activeId === e.nodeId
         if (!watching) cs.markUnread(e.nodeId)
         // Watched it finish? Then it is already read. Nothing marks it unread in this branch, so
@@ -11979,6 +11989,9 @@ export function Canvas() {
         // green blob and the phone's Live Activity would keep glowing for a turn the user sat and
         // watched end. The mirror no-ops when there is no unresolved done event.
         else if (sound === 'done') void window.nodeTerminal.ackDone(e.nodeId)
+        // Everything from here down is an INTERRUPT, and this is where a quiet alert stops. The
+        // unread dot and its ack above are deliberately on the other side of this line.
+        if (opts?.quiet) return
         // Sound first: it is the one alert that also fires while you're in the app but looking at
         // another node — the case OS notifications deliberately skip.
         const snd = useSettings.getState().settings
@@ -12046,7 +12059,16 @@ export function Canvas() {
             // a renderer reload. Gating the badge but not the sound/notification would half-enforce
             // the flag and leave the expensive error — a false completion — fully reachable.
             cs.bumpLoop(e.nodeId, e.lastMessage) // count loop iterations + summary (no-op if not looping)
-            alert('finished', `${agentLabel} finished its turn.`, 'done')
+            // Issue #708: a turn that ended only because a BACKGROUND SUBAGENT reported back is
+            // not the fan-out finishing — the parent is about to be woken again by the next one.
+            // Read fresh (not the `an` snapshot taken at listener entry): `clearFinishedForParent`
+            // may have run just above. It only drops DONE cards, so the verdict is the same either
+            // way, and depending on that is exactly the kind of coupling that rots.
+            const fanoutBusy = fanoutStillWorking(
+              Object.values(useAgentNodes.getState().byId),
+              e.nodeId
+            )
+            alert('finished', `${agentLabel} finished its turn.`, 'done', { quiet: fanoutBusy })
           }
           if (e.state === 'blocked')
             alert('needs input', `${agentLabel} needs permission to continue.`, 'needsYou')

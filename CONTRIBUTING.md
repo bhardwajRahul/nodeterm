@@ -168,6 +168,23 @@ reporting "no sessions" on a host running thirty.
 never a substituted nearest match. A hand-editable value that is unrecognised must yield the safe
 default, never something more destructive than the default.
 
+**A node's OWNERSHIP is persisted state, never a live object.** "Is this node remote / whose host is
+it on?" must be answerable with nothing attached, because the questions that ask it — a delete, a
+kill, a cleanup — arrive precisely when nothing is: after an app restart, after the offscreen
+release, after the park timer, for a project that is not open. `PtyManager.runEndSession` read it
+off the dying in-memory `Session` instead, so an SSH node deleted with no live client had its remote
+`kill-session` skipped **in silence** and its one kill sent to the LOCAL tmux socket, where a
+`requireRemote` node has nothing; the node left the canvas looking deleted and its `nt-<id>` kept
+running on the host. Ask the machine-local index (`workspaceStore.sshProjectIdForNode`), and treat a
+live handle as the *complement* of that answer, not its source.
+
+**A side effect you could not deliver is not a side effect you performed.** The `ok:false` rule is
+not only for reads. `catch {}` around a remote kill folded "tmux says there is no such session" (an
+ANSWER) into "the ControlMaster is down" (a NON-answer, session still running). Classify the failure
+— and when the work genuinely cannot be done now, either refuse the action with a reason or write
+the debt down and settle it later (`core/pending-remote-kills.ts`). Silently dropping it is the one
+option that is never available.
+
 **A Server Edition agent owns only nodes it freshly opened in this server run.** The
 creator ledger is process-local and must never be rebuilt from `.nodeterm/project.json`, titles,
 hook history, or a surviving tmux name: all are writable or stale. A restart therefore clears

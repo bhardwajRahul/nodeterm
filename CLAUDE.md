@@ -620,6 +620,37 @@ Lifecycle, by intent:
 - **User clicks ×** → `destroy(persistKey)` runs `tmux kill-session`, permanently ending it. For a
   REMOTE node it kills the remote session **and then the local one of the same name** — normally a
   no-op, but it reaps the orphan the pre-`requireRemote` local fallback below could leave behind.
+  **Whether a node IS remote is answered WITHOUT a live session** (`core/remote-end.ts`,
+  `planRemoteEnd`). `runEndSession` used to read it off the dying `Session` alone
+  (`dying?.sshRemote`), and its comment claimed "both callers run while the session is still live"
+  — which is false for the case that matters: a delete arrives precisely when there may be nothing
+  attached (an app restart, the offscreen release, the 5-min park expiry, a project that is not
+  even open). `dying` was then `undefined`, remoteness read as "local", the remote branch was
+  skipped **in silence**, and the one kill that went out went to the LOCAL socket, where a
+  `requireRemote` node has nothing at all. Everything else about the teardown ran, so the node left
+  the canvas looking deleted while its `nt-<id>` kept running on the host — a leak with no surface
+  anywhere. The durable answer is the machine-local index: the shell wires
+  `PtyManager.setRemoteNodeOwner` to `workspaceStore.sshProjectIdForNode` + that project's
+  ControlMaster (`refForProject`). A LIVE `sshRemote` still wins when there is one — it is the exact
+  master the session was spawned over, and a node created seconds ago may not be in the index cache
+  yet — so the two sources are complementary, not redundant. The Server Edition wires no resolver
+  (it has no SSH-project manager) and its deletes stay on the local path unchanged.
+  **And the kill is CHECKED.** The old `catch {}` read "remote session may not exist / master down;
+  ignore", which are not the same fact: tmux's own exit 1 ("can't find session", `probeSaysAbsent`)
+  is an ANSWER, while ssh's 255 / a 127 / a spawn error is a NON-answer with the session still
+  running. A non-answer — and a node whose project has no master at all — is **recorded**
+  (`core/pending-remote-kills.ts`, atomic JSON under userData, keyed by `user@host` because several
+  projects share one host's tmux server) and settled the next time that host connects
+  (`SshProjectManager.settleOwedKills`, hung on the shared connect attempt so the REUSE branch pays
+  too; an entry is dropped only on tmux exit 0 or 1). The delete itself is **never refused** over an
+  unreachable host: the node is going, and a refusal strands it on the canvas with the same session
+  still running plus a dialog — the user answers that by deleting it again. That trade is only
+  defensible BECAUSE the debt is durable; drop the store and refusing becomes the honest option.
+  **Only a `delete` may owe a debt.** A `recycle` keeps the node (worktree move, model switch,
+  "pause & end session"), so a kill deferred to a later reconnect would land on the session that
+  node has since RESPAWNED under the same name — ending live work hours after the action that
+  queued it, with nothing on screen connecting the two. A recycle still ATTEMPTS the remote kill;
+  it just records nothing when it cannot land, exactly as before.
 - **A remote node is NEVER spawned locally** (`PtyCreateOptions.requireRemote`). `sshRemote` says
   "here is the master to run over"; `requireRemote` says "and if there isn't one, spawn NOTHING".
   Without it, a create with no `sshRemote` falls through to core's local tmux/plain-shell branches

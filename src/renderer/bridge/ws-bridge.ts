@@ -23,6 +23,7 @@ import {
   type LogRecord,
   type BoardLogReadResult,
   type ChatTranscriptResult,
+  type TranscriptPresence,
   type ClaudeApi,
   type ClaudeCliCaps,
   type GrokApi,
@@ -900,7 +901,20 @@ export function buildTranscriptApi(
           accountId,
           nodeId,
           agentId
-        ) as Promise<ChatTranscriptResult>
+        ) as Promise<ChatTranscriptResult>,
+      // A REAL implementation, not a stub: the server runs on the machine holding these
+      // transcripts, so its answer is as good as the desktop's local leg. A failed request
+      // degrades to `unknown` (never `absent`) — cold restore acts on a negative, so the wrong
+      // degrade would drop a live conversation's `--resume` because a socket blipped.
+      transcriptExists: (sessionId, accountId, nodeId) =>
+        (
+          client.request(
+            IPC.transcriptExists,
+            sessionId,
+            accountId,
+            nodeId
+          ) as Promise<TranscriptPresence>
+        ).catch(() => 'unknown' as const)
     },
     claudeReadTranscript: (sessionId, cwd, accountId, nodeId) =>
       client.request(

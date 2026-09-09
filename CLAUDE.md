@@ -786,6 +786,50 @@ session (you can't keep a live OS process across a reboot):
   flag — and instead records the pane its fresh shell settled on (`agentStatus.hibernatedPane`),
   so a later explicit Resume can recognize it even for a default shell outside the wake's
   `isShellCommand` allowlist.
+  **A persisted session id is not evidence the conversation still exists**, and a dead one is not a
+  no-op: `claude --resume <dead id>` prints *"No conversation found with session ID: <uuid>"* and
+  EXITS, leaving the pane at a bare shell under a node still wearing its agent badge. Measured
+  2026-09-09 on the reporting host (`nodeterm-rmt`, 108 live sessions): **20** panes sat in exactly
+  that state, and not one of those 20 ids had a `<id>.jsonl` anywhere under the system
+  `~/.claude/projects` or the managed account root. Claude's own 30-day cleanup, a `/clear`, a
+  removed account and an id minted for a session that never ran all produce it. So the cold-restore
+  branch now asks `chat.transcriptExists` first (`transcript:exists`, served by
+  `registerTranscriptIpc` in BOTH shells) and, on a POSITIVE `absent`, launches the agent **bare**
+  and raises a slim `CoState.lostSession` banner on the node — "The previous conversation could not
+  be found — this agent started fresh." — instead of opening a blank session in silence. Three
+  rules make that safe:
+  - **The answer is a TRI-state** (`TranscriptPresence`: `present | absent | unknown`) and only
+    `absent` drops the id. The two errors are wildly asymmetric — wrongly resuming a dead id costs
+    one line and a bare shell (today's bug), wrongly dropping a LIVE id strands work the user
+    believes is continuing — so an unreadable root, a `readdir` that threw, a downed ControlMaster,
+    a relay tab, a rejected call and an id we would not put on a command line are ALL `unknown` =
+    resume exactly as before. `transcriptPresence` (`core/transcript-reader.ts`) is
+    `resolveTranscriptPath` plus that one distinction, not a second way of finding a transcript,
+    and a root that does not exist at all still answers `unknown` on purpose: cold restore runs at
+    boot, where a not-yet-mounted `$HOME` is indistinguishable from an empty one.
+  - **The remote leg's `unknown` is TERMINAL, never a fallthrough.** A remote session's transcript
+    is on the host, so searching this machine for it would find nothing and report `absent` about
+    the wrong computer. `remoteTranscriptPresence` (`src/main`) exists beside
+    `remoteTranscriptRefFor` rather than reusing it because that function collapses "not remote" /
+    "no home" / "ssh failed" / "the host looked and there is nothing" into one `undefined` — fine
+    for a reader that falls back, fatal for a caller that acts on absence.
+    `locateRemoteTranscriptCommand` was already built for this distinction (it exits 0 on a clean
+    miss, "so no transcript is an ANSWER, not a failed ssh"), and that is the property this reads;
+    it is deliberately more permissive than the local leg (it searches the account root AND the
+    system root), which errs toward `present` = keep the resume.
+  - **Claude only**, gated by `readsClaudeTranscript` — a codex/gemini/grok id misses this
+    resolver by construction every time, so probing one would answer `absent` for a healthy
+    session and drop its resume. Those agents keep the pre-existing behaviour until the probe
+    learns their layouts (`handoff/locate.ts` has the per-agent locators; that is the seam).
+  Decision logic is the pure `terminal/cold-resume-session.ts`. **Adding a `CoState` field owes the
+  hand-written equality list in `setCo`** — a patch touching only an uncompared field is SWALLOWED
+  and its banner silently never renders (it happened once to `spawnError`);
+  `nodes/cold-resume-wiring.test.ts` now asserts every field of the interface appears there.
+  Surfaces: Desktop full; Server Edition full (the handler is core, the ws-bridge leg is real, and
+  that shell runs on the host whose transcripts it reads, so it needs no remote leg); relay tabs
+  answer `unknown` and resume as before. **Not yet on the kanban CARD MODAL** — `ModalTerminal`
+  reads no `CoState`, so a user who only ever opens the session from the board does not see the
+  notice; the honest fix is a shared node-notice surface rather than a second copy of the banner.
 
 ### We have our own VT emulator — check it before asking tmux
 
@@ -1478,8 +1522,9 @@ else, and its context links must keep classifying across restarts).
   never judged. **A second thing this catches, unplanned:** in the same sweep 9 of 149 panes sat at a
   bare shell because a cold-restore `--resume` had answered *"No conversation found with session
   ID"* — the persisted `sessionId` outlived its transcript. The chip surfaces those too, but the
-  Resume it offers replays the same dead id; making cold restore fall back to a bare launch when the
-  transcript is gone is a separate, unbuilt fix.
+  Resume it offers still replays that dead id — but cold restore no longer creates the state: it
+  probes `transcript:exists` first and launches bare on a positive `absent`, saying so on the node
+  (see **Cold restore** above). Re-measured on the same host 2026-09-09: **20** of 108.
 - **Hook server (loopback HTTP)** — `src/core/agents/hook-server.ts` is a main-process
   loopback HTTP server (per-session bearer token, fail-open) that the installed hook scripts
   POST to; it replaced the old `fs.watch` signal-log mechanism. `buildPtyEnv` injects the

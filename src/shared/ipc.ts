@@ -39,6 +39,10 @@ export const IPC = {
   ptyRaiseDeviceLimit: 'pty:raise-device-limit',
   claudeReadTranscript: 'claude:read-transcript',
   chatReadTranscript: 'chat:read-transcript',
+  /** Does a claude-shaped transcript exist for this session id? Tri-state
+   *  (`present | absent | unknown`) — see `TranscriptPresence`. The one caller that ACTS on a
+   *  negative is cold restore, so "we could not look" must never read as "it is gone". */
+  transcriptExists: 'transcript:exists',
   claudeAccountsAdd: 'claude-accounts:add',
   claudeAccountsWaitLogin: 'claude-accounts:wait-login',
   claudeAccountsCancelWait: 'claude-accounts:cancel-wait',

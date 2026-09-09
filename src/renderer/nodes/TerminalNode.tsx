@@ -127,6 +127,8 @@ import {
   type PauseOutcome,
   type ResumePhaseOutcome
 } from '../terminal/agent-restart'
+import { coldResumeDecision, shouldProbeTranscript } from '../terminal/cold-resume-session'
+import type { TranscriptPresence } from '@shared/types'
 import {
   looksDropped,
   looksDroppedCandidate,
@@ -822,6 +824,17 @@ interface CoState {
    */
   staleCwd: boolean
   /**
+   * This node COLD-STARTED and the conversation its persisted session id names is gone, so the
+   * agent was launched bare instead of resuming a dead id (see `cold-resume-session.ts`).
+   *
+   * A slim banner rather than an overlay, for the same reason `staleCwd` is one: the terminal
+   * underneath is alive and working — the agent started, it simply started fresh. Nothing to
+   * retry, so the only control is a dismiss. Announced at all because the alternative is what
+   * this fixes from the other side: a fresh conversation opened in silence, under a node whose
+   * title, badge and history all still describe the old one.
+   */
+  lostSession: boolean
+  /**
    * A one-shot launch command was REFUSED at delivery because it is longer than a canonical-mode
    * tty line (`deliverCommand`'s `line-too-long`, issue #706). Holds the command's byte length,
    * for the banner; `null` = nothing refused.
@@ -839,6 +852,7 @@ const NO_CO: CoState = {
   offline: false,
   spawnError: null,
   staleCwd: false,
+  lostSession: false,
   launchTooLongBytes: null
 }
 const coStates = new Map<string, CoState>()
@@ -1048,6 +1062,7 @@ function setCo(key: string, patch: Partial<CoState>): void {
     next.offline === prev.offline &&
     next.spawnError === prev.spawnError &&
     next.staleCwd === prev.staleCwd &&
+    next.lostSession === prev.lostSession &&
     next.launchTooLongBytes === prev.launchTooLongBytes
   )
     return
@@ -1872,6 +1887,7 @@ export function TerminalNode({
     }))
   }
   const dismissStaleCwd = (): void => setCo(termKey, { staleCwd: false })
+  const dismissLostSession = (): void => setCo(termKey, { lostSession: false })
   const dismissLaunchTooLong = (): void => setCo(termKey, { launchTooLongBytes: null })
 
   // "Not connected" (CoState.offline): the host was unreachable, so this node has no session
@@ -3036,6 +3052,10 @@ export function TerminalNode({
         // Truthful on EVERY result, not only when set: a clean respawn ("Restart in folder", or
         // any refresh that landed on a healthy session) must take the banner down with it.
         setCo(termKey, { staleCwd: !!staleCwd })
+        // Same rule for the lost-conversation notice, and it is cleared HERE (before the
+        // cold-restore branch below can raise it) so a respawn that resumes cleanly — or any
+        // warm reattach, which never reaches that branch at all — takes the old banner down.
+        setCo(termKey, { lostSession: false })
         // Catch up a size change that landed while the spawn was in flight (applyFit skips the
         // IPC until sessionId is set, and the observer won't re-fire without another change).
         applyFit()
@@ -3365,6 +3385,26 @@ export function TerminalNode({
           // relaunched empty while their transcripts sat on disk, unreachable.
           const st = useAgentStatus.getState().byId[id]
           const priorId = st?.sessionId || data.agentSessionId
+          // …and is that conversation still THERE? A persisted id outlives its transcript
+          // (claude's 30-day cleanup, a `/clear`, a removed account, an id minted for a session
+          // that never ran), and `claude --resume <dead id>` prints "No conversation found with
+          // session ID" and exits — leaving the pane at a bare shell with an agent badge over it.
+          // Measured on one host: 20 of 108 live sessions sat in exactly that state.
+          //
+          // Only a POSITIVE `absent` drops the id (see `coldResumeDecision` for why the two errors
+          // are not symmetric). `data.accountId` is the right scope and `accountForReads` is not:
+          // the question is whether the command we are about to type will find the conversation,
+          // and that command runs under the config dir `data.accountId` names.
+          const presence = shouldProbeTranscript(priorId, agentId)
+            ? await api.chat
+                .transcriptExists(priorId!, data.accountId, id)
+                .catch((): TranscriptPresence => 'unknown')
+            : ('unknown' as TranscriptPresence)
+          const resume = coldResumeDecision(priorId, presence)
+          // Say so rather than starting a fresh conversation in silence. `life.dead` first, like
+          // the spawn-rejection handler below: a node unmounted mid-probe must not publish into a
+          // key the next mount reads.
+          if (resume.lostSession && !life.dead) setCo(termKey, { lostSession: true })
           // Re-resolve the mode at relaunch: it's a property of how a session is launched, not
           // a persisted property of the node, so the current setting wins after a reboot. Awaited
           // (not the sync `activePermissionMode`) because this fires on mount: right after a machine
@@ -3394,7 +3434,7 @@ export function TerminalNode({
             {
               agentId,
               customAgent,
-              sessionId: priorId || undefined,
+              sessionId: resume.sessionId,
               permissionMode: mode,
               model: data.agentModel,
               sharedIdentity: shared,
@@ -5470,6 +5510,33 @@ export function TerminalNode({
             </button>
           </div>
         )}
+        {/* Lost conversation: the cold restore could not find the transcript its persisted session
+            id names, so the agent was launched BARE. Same slim top banner as staleCwd above, and
+            for the same reason — the terminal underneath is alive; only its history is missing.
+            Yields to staleCwd (a dead working directory is the bigger problem, and two stacked
+            banners would cover the screen). No action button: there is nothing to retry, the
+            conversation is gone. */}
+        {!co.closed &&
+          !co.ended &&
+          !co.spawnError &&
+          !co.offline &&
+          !co.staleCwd &&
+          co.lostSession &&
+          !offscreenDown && (
+            <div className="term-node__stalecwd nodrag">
+              <span className="term-node__stalecwd-text">
+                The previous conversation could not be found — this agent started fresh.
+              </span>
+              <button
+                className="term-node__stalecwd-dismiss"
+                onClick={dismissLostSession}
+                title="Dismiss"
+                aria-label="Dismiss"
+              >
+                ×
+              </button>
+            </div>
+          )}
         {armed && !mdMode && (
           <div
             className="term-hover-guard"

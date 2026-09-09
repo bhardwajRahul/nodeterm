@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 // @ts-expect-error The field scanner intentionally runs as dependency-free native ESM.
-import { auditSession, classifyProcesses, cleanScreen, extractModelArg, parseCliArgs, parsePaneList, parseProcessList, parseScreenContextWindow, reportLogLines, screenSignals } from '../../scripts/agent-session-scan.mjs'
+import { auditSession, classifyProcesses, cleanScreen, extractModelArg, loadWorkspaceNodes, parseCliArgs, parsePaneList, parseProcessList, parseScreenContextWindow, reportLogLines, screenSignals } from '../../scripts/agent-session-scan.mjs'
 
 describe('agent session scanner', () => {
   it('keeps the pane shell pid separate from the foreground agent pid', () => {
@@ -30,6 +33,28 @@ describe('agent session scanner', () => {
     })
   })
 
+  it('does not mistake an unrelated command argument for the expected agent', () => {
+    const rows = parseProcessList(`
+      79108 79108 Ss   -zsh -zsh
+      79141 79141 S+   rg rg claude README.md
+    `)
+    expect(classifyProcesses(rows, 79108, 'claude')).toMatchObject({
+      state: 'unexpected-foreground',
+      agentPid: undefined
+    })
+  })
+
+  it('recognizes an agent launched through an interpreter wrapper', () => {
+    const rows = parseProcessList(`
+      79108 79108 Ss   -zsh -zsh
+      79141 79141 S+   node node /opt/homebrew/bin/claude --resume session
+    `)
+    expect(classifyProcesses(rows, 79108, 'claude')).toMatchObject({
+      state: 'agent-running',
+      agentPid: 79141
+    })
+  })
+
   it('parses pane records without conflating the session id and node id', () => {
     const sep = '\u001f'
     expect(
@@ -50,6 +75,93 @@ describe('agent session scanner', () => {
     expect(extractModelArg('claude --resume x --model vllm/glm[1m]')).toBe('vllm/glm[1m]')
     expect(extractModelArg('codex resume x -m gpt-5.6')).toBe('gpt-5.6')
     expect(extractModelArg('claude --model="model with spaces"')).toBe('model with spaces')
+  })
+
+  it('loads an inline project from its authoritative data file instead of the compatibility cache', () => {
+    const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nodeterm-agent-scan-'))
+    try {
+      fs.mkdirSync(path.join(userDataDir, 'inline-projects'))
+      fs.writeFileSync(
+        path.join(userDataDir, 'workspace.json'),
+        JSON.stringify({
+          version: 3,
+          entries: [{
+            id: 'project-inline-1',
+            name: 'Inline',
+            dataFile: true,
+            project: { nodes: [{ id: 'stale-node', agentId: 'claude' }] }
+          }]
+        })
+      )
+      fs.writeFileSync(
+        path.join(userDataDir, 'inline-projects', 'project-inline-1.json'),
+        JSON.stringify({
+          version: 1,
+          nodes: [{ id: 'fresh-node', agentId: 'codex', agentLaunchModel: 'gpt-5.6' }]
+        })
+      )
+
+      const workspace = loadWorkspaceNodes(userDataDir)
+      expect([...workspace.nodes.keys()]).toEqual(['fresh-node'])
+      expect(workspace.nodes.get('fresh-node')).toMatchObject({
+        agentId: 'codex',
+        agentLaunchModel: 'gpt-5.6',
+        source: path.join(userDataDir, 'inline-projects', 'project-inline-1.json')
+      })
+    } finally {
+      fs.rmSync(userDataDir, { recursive: true, force: true })
+    }
+  })
+
+  it('jails inline data-file ids and falls back to the compatibility cache', () => {
+    const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nodeterm-agent-scan-'))
+    try {
+      fs.writeFileSync(
+        path.join(userDataDir, 'workspace.json'),
+        JSON.stringify({
+          version: 3,
+          entries: [{
+            id: '../outside',
+            name: 'Unsafe inline id',
+            dataFile: true,
+            project: { nodes: [{ id: 'cached-node', agentId: 'claude' }] }
+          }]
+        })
+      )
+
+      const workspace = loadWorkspaceNodes(userDataDir)
+      expect([...workspace.nodes.keys()]).toEqual(['cached-node'])
+      expect(workspace.nodes.get('cached-node')?.source).toBe(path.join(userDataDir, 'workspace.json'))
+    } finally {
+      fs.rmSync(userDataDir, { recursive: true, force: true })
+    }
+  })
+
+  it('falls back to the compatibility cache when an authoritative inline data file is unreadable', () => {
+    const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nodeterm-agent-scan-'))
+    try {
+      fs.writeFileSync(
+        path.join(userDataDir, 'workspace.json'),
+        JSON.stringify({
+          version: 3,
+          entries: [{
+            id: 'project-inline-1',
+            name: 'Inline fallback',
+            dataFile: true,
+            project: { nodes: [{ id: 'cached-node', agentId: 'claude' }] }
+          }]
+        })
+      )
+
+      const workspace = loadWorkspaceNodes(userDataDir)
+      expect([...workspace.nodes.keys()]).toEqual(['cached-node'])
+      expect(workspace.nodes.get('cached-node')?.source).toBe(path.join(userDataDir, 'workspace.json'))
+      expect(workspace.errors[0]).toContain(
+        path.join(userDataDir, 'inline-projects', 'project-inline-1.json')
+      )
+    } finally {
+      fs.rmSync(userDataDir, { recursive: true, force: true })
+    }
   })
 
   it('flags the shell-only and stale autocompact cases independently', () => {

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 /**
- * Local, read-only field diagnostic for Nodeterm agent sessions.
+ * Local field diagnostic for Nodeterm agent sessions. Scanning does not mutate Nodeterm state;
+ * the explicit `--append` option writes the metadata-only report chosen by the caller.
  *
  * It joins four independently useful facts:
  *   - the node's persisted launch record (workspace/project files),
@@ -59,6 +60,11 @@ const SHELL_NAMES = new Set([
   'xonsh',
   'zsh'
 ])
+
+// Interpreters whose next non-option argv slot is the executable script. Keep this narrow: an
+// arbitrary argument named `claude` (for example `rg claude README.md`) is not proof that Claude
+// owns the foreground process group.
+const INTERPRETERS = new Set(['node', 'nodejs', 'bun', 'deno', 'python', 'python3', 'ruby', 'perl'])
 
 const SCREEN_SIGNALS = [
   ['awaiting-confirmation', /ready to code\?|would you like to proceed\?|do you want to proceed/i],
@@ -147,9 +153,12 @@ function processScore(row, expected) {
   const argv = tokens(row.args)
   if (baseName(row.command) === want) return 100
   if (baseName(argv[0]) === want) return 90
-  if (baseName(argv[1]) === want) return 80
-  if (argv.some((part) => baseName(part) === want)) return 70
-  if (new RegExp(`(?:^|[/\\\\])${want}(?:\\.(?:js|mjs|cjs))?(?:$|\\s)`, 'i').test(row.args)) return 60
+  const head = baseName(argv[0])
+  const script = argv[1]
+  if (INTERPRETERS.has(head) && script && !script.startsWith('-')) {
+    const scriptName = baseName(script).replace(/\.(?:js|mjs|cjs)$/i, '')
+    if (scriptName === want) return 80
+  }
   return 0
 }
 
@@ -244,6 +253,12 @@ function readJson(file) {
   }
 }
 
+// Mirrors `isInlineProjectFileId` in core/workspace-files.ts. workspace.json is hand-editable, so
+// an inline-project id must cross the same path jail before it names a file under userData.
+function isInlineProjectFileId(id) {
+  return typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(id) && !id.includes('..')
+}
+
 /** Read only the launch metadata needed by the scan; never mutates or migrates workspace files. */
 export function loadWorkspaceNodes(userDataDir) {
   const indexPath = path.join(userDataDir, 'workspace.json')
@@ -254,8 +269,23 @@ export function loadWorkspaceNodes(userDataDir) {
   const errors = []
   const entries = Array.isArray(indexRead.value.entries) ? indexRead.value.entries : []
   for (const entry of entries) {
-    let project = entry.project
+    let project
     let source = indexPath
+    // A cwd-less v3 project stores its authoritative content in
+    // `userData/inline-projects/<id>.json`; `entry.project` is only the one-release compatibility
+    // cache. Match WorkspaceStore.loadV3: a valid data file wins, and a missing/corrupt one falls
+    // back to that cache. Never let a hand-edited id escape the inline-projects directory.
+    if (entry.dataFile === true && !entry.cwd && !entry.ssh && isInlineProjectFileId(entry.id)) {
+      const dataFile = path.join(userDataDir, 'inline-projects', `${entry.id}.json`)
+      const dataRead = readJson(dataFile)
+      if (dataRead.value?.version === 1 && Array.isArray(dataRead.value.nodes)) {
+        project = dataRead.value
+        source = dataFile
+      } else {
+        errors.push(`${dataFile}: ${dataRead.error || 'invalid project file'}`)
+      }
+    }
+    if (!project) project = entry.project
     if (!project && entry.cwd) {
       source = path.join(entry.cwd, '.nodeterm', 'project.json')
       const projectRead = readJson(source)
@@ -599,12 +629,13 @@ export function parseCliArgs(argv) {
 
 const HELP = `Usage: npm run diagnose:agents -- [options]
 
-Read-only scan of Nodeterm-owned tmux agent panes.
+Scan Nodeterm-owned tmux agent panes without mutating Nodeterm state.
+Process inspection requires POSIX ps and is not supported on native Windows.
 
   --node <id[,id]>       scan only these node ids
   --screens              include recent terminal screen text on stdout (never in appended logs)
   --screen-lines <n>     lines captured per screen (default 80)
-  --append <path>        append a metadata-only scan header and one JSONL record per session
+  --append <path>        write by appending a metadata-only header and one JSONL record per session
   --watch <seconds>      repeat until interrupted
   --count <n>            stop a watch after n scans
   --json                 print JSON (includes screens only with --screens)

@@ -19,6 +19,7 @@ import { candidateName, safeDownloadBasename } from '../../core/download-name'
 import { removeAtomic, renameAtomic } from '../../core/fs-atomic'
 import { findExecutableSync, shellPathNow } from '../../core/exec-path'
 import { isSafeRemoteHome } from '../../core/remote-safety'
+import { drainPendingRemoteKills } from '../../core/pending-remote-kills'
 import { mediaCachePruneList, remoteMediaCacheName } from '../../core/remote-ssh/media-cache'
 import { allowMediaPath } from '../media-protocol'
 import { remoteAccountConfigDir, isSupportedClaudeVersion } from '../../core/claude-accounts-core'
@@ -493,8 +494,37 @@ export class SshProjectManager {
     const attempt = this.connectOnce(projectId, conn, remoteCwd, ticket).finally(() => {
       if (this.inFlight.get(projectId)?.attempt === attempt) this.inFlight.delete(projectId)
     })
+    // This host is reachable again, so this is the moment to pay off any remote `kill-session` a
+    // node delete could not deliver while it was down (see core/pending-remote-kills.ts). Hung on
+    // the shared attempt rather than inside `connectOnce`, so the REUSE branch — which returns
+    // long before the `connected` event — settles its debts too.
+    //
+    // Fire-and-forget, same contract as the tunnel resync below it: several remote round trips of
+    // pure cleanup must never delay, or fail, a connect that has already succeeded.
+    void attempt.then(
+      () => this.settleOwedKills(projectId),
+      () => {}
+    )
     this.inFlight.set(projectId, { conn, attempt, ticket })
     return attempt
+  }
+
+  /**
+   * Deliver the remote kills this machine still owes the host behind `projectId`.
+   *
+   * Keyed by HOST, not by project: several projects share one host's `$HOME` and one tmux server,
+   * so whichever of them reconnects first can settle every session owed there. An entry is dropped
+   * only on tmux's own answer — exit 0 (killed) or exit 1 ("can't find session" / "no server
+   * running", i.e. already gone). Anything else is a failed READ, never evidence of absence, and
+   * the debt stays for the next connect.
+   */
+  private async settleOwedKills(projectId: string): Promise<void> {
+    const c = this.conns.get(projectId)
+    if (!c) return
+    await drainPendingRemoteKills(sshHostKey(c.conn), async (session) => {
+      const { code } = await this.r.run(remoteTmuxKillArgs(c.conn, c.controlPath, session))
+      return code === 0 || code === 1
+    })
   }
 
   private async connectOnce(

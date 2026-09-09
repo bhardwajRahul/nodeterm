@@ -620,6 +620,37 @@ Lifecycle, by intent:
 - **User clicks ×** → `destroy(persistKey)` runs `tmux kill-session`, permanently ending it. For a
   REMOTE node it kills the remote session **and then the local one of the same name** — normally a
   no-op, but it reaps the orphan the pre-`requireRemote` local fallback below could leave behind.
+  **Whether a node IS remote is answered WITHOUT a live session** (`core/remote-end.ts`,
+  `planRemoteEnd`). `runEndSession` used to read it off the dying `Session` alone
+  (`dying?.sshRemote`), and its comment claimed "both callers run while the session is still live"
+  — which is false for the case that matters: a delete arrives precisely when there may be nothing
+  attached (an app restart, the offscreen release, the 5-min park expiry, a project that is not
+  even open). `dying` was then `undefined`, remoteness read as "local", the remote branch was
+  skipped **in silence**, and the one kill that went out went to the LOCAL socket, where a
+  `requireRemote` node has nothing at all. Everything else about the teardown ran, so the node left
+  the canvas looking deleted while its `nt-<id>` kept running on the host — a leak with no surface
+  anywhere. The durable answer is the machine-local index: the shell wires
+  `PtyManager.setRemoteNodeOwner` to `workspaceStore.sshProjectIdForNode` + that project's
+  ControlMaster (`refForProject`). A LIVE `sshRemote` still wins when there is one — it is the exact
+  master the session was spawned over, and a node created seconds ago may not be in the index cache
+  yet — so the two sources are complementary, not redundant. The Server Edition wires no resolver
+  (it has no SSH-project manager) and its deletes stay on the local path unchanged.
+  **And the kill is CHECKED.** The old `catch {}` read "remote session may not exist / master down;
+  ignore", which are not the same fact: tmux's own exit 1 ("can't find session", `probeSaysAbsent`)
+  is an ANSWER, while ssh's 255 / a 127 / a spawn error is a NON-answer with the session still
+  running. A non-answer — and a node whose project has no master at all — is **recorded**
+  (`core/pending-remote-kills.ts`, atomic JSON under userData, keyed by `user@host` because several
+  projects share one host's tmux server) and settled the next time that host connects
+  (`SshProjectManager.settleOwedKills`, hung on the shared connect attempt so the REUSE branch pays
+  too; an entry is dropped only on tmux exit 0 or 1). The delete itself is **never refused** over an
+  unreachable host: the node is going, and a refusal strands it on the canvas with the same session
+  still running plus a dialog — the user answers that by deleting it again. That trade is only
+  defensible BECAUSE the debt is durable; drop the store and refusing becomes the honest option.
+  **Only a `delete` may owe a debt.** A `recycle` keeps the node (worktree move, model switch,
+  "pause & end session"), so a kill deferred to a later reconnect would land on the session that
+  node has since RESPAWNED under the same name — ending live work hours after the action that
+  queued it, with nothing on screen connecting the two. A recycle still ATTEMPTS the remote kill;
+  it just records nothing when it cannot land, exactly as before.
 - **A remote node is NEVER spawned locally** (`PtyCreateOptions.requireRemote`). `sshRemote` says
   "here is the master to run over"; `requireRemote` says "and if there isn't one, spawn NOTHING".
   Without it, a create with no `sshRemote` falls through to core's local tmux/plain-shell branches
@@ -634,6 +665,24 @@ Lifecycle, by intent:
   The refusal is **only** in `spawnNew` — a co-attach JOIN to a live session for that node id is
   still correct. An offline node reports itself to `SshReconnector`, so the canvas heals itself;
   `retryNow` (banner Reconnect / node Reconnect) skips the backoff and clears the refuse window.
+- **A shared Codex daemon restart is NOT a terminal-session restart.** tmux survives, and the Codex
+  rollout/thread survives, but every `codex --remote unix://` TUI attached to that account's one
+  app-server socket exits together. `buildCodexLauncherScript` therefore stays in the pane as a
+  bounded transport supervisor after binding a thread instead of `exec`ing the remote TUI. On an
+  abnormal client exit it resumes that exact thread only when `app-server daemon version` no longer
+  reports `status: running` or the known control-socket inode changed; the same healthy generation
+  returns the original status so a deterministic CLI error cannot relaunch forever. A reconnect
+  never replays the launch prompt/options (that would duplicate the user's turn), and three rapid
+  resets stop with a manual `codex resume <thread>` receipt. Preflight probes live protocol health
+  before lifecycle start: Codex's PID ownership record can go stale while the shared process remains
+  responsive, and killing that "orphan" would fan one bookkeeping failure out across every node.
+  The generated-shell tests run the replaced-socket, missing-daemon, healthy-client-error, and
+  responsive-orphan cases under real `/bin/sh`; the healthy-error case is the mutation guard.
+  **Both shells wire this spine.** Electron and Server Edition arm the same signed record secret,
+  thread start/bind handlers, capability refresh, and UI identity events; the server composition is
+  isolated in `server/codex-shared-identity.ts` and behavior-tested. The old Server Edition
+  "deliberate plain Codex" answer bypassed the launcher entirely, so a reconnect implementation in
+  the launcher could be perfectly green while every headless pane still fell back to its shell.
 - **"Restart agent (resume)"** → deliberately NOT a session lifecycle event: `terminal/
   agent-restart.ts` restarts the agent CLI *inside* the pane and leaves the PTY, the tmux session
   and its scrollback untouched. It exists for **new-model pickup** — a freshly released model only
@@ -1533,13 +1582,18 @@ else, and its context links must keep classifying across restarts).
     builder), because the failure is silent and one-sided: a remote shim carrying the prelude keeps
     working, and the only symptom is this machine's userData layout sitting in a file on someone
     else's server. **The prelude is shared; the RECORD it reads is desktop-only.** Those writers are
-    the two hook-server handlers `src/main/index.ts` registers, and
-    `src/server/handlers/index.ts` deliberately registers neither — so on the Server Edition the
-    file is byte-identical, the signing secret is armed, and the resolver still finds nothing and
-    takes its fallback. Coherent rather than missing: that shell answers `shared: false`
-    (`UNKNOWN_CODEX_IDENTITY_CAPS`), so its Codex nodes run their own app-server and no tool shell
-    needs recovering. It turns into a real gap only when that edition grows the shared app-server,
-    and the fix is the two registrations.
+    the two hook-server handlers `src/main/index.ts` registers — and, since the daemon-reset work,
+    the ones `wireServerCodexSharedIdentity` (`src/server/codex-shared-identity.ts`) registers at
+    Server Edition boot as well. That shell used to answer a flat `shared: false`
+    (`UNKNOWN_CODEX_IDENTITY_CAPS`) as a DELIBERATE degrade: its Codex nodes ran their own
+    app-server, so no tool shell needed recovering. It no longer does. The Server Edition has the
+    same local app-server, the same signed node tokens and the same persistent canvas store, so it
+    wires the shared-thread spine **after** those secrets exist and its panes get the same
+    supervisor. The registration is deliberately late for that reason, and `registerCodexIdentityIpc()`
+    now answers from the live resolver instead of a constant — an early browser caller waits for the
+    refresh rather than being pinned to a false "plain Codex" answer for the whole app run. What
+    remains desktop-only is the record's REMOTE leg (SSH shims carry no record root or prelude, the
+    paragraph above).
   - **That prelude EXPORTS WHAT THE RECORD SAYS — it never decides.** `NODETERM_AGENT_ID` and
     `NODETERM_CANVAS_CONTROL` were once constants there (`codex`, granted); both are
     `buildPtyEnv`'s answers about the PANE, which labels a node with its OWN agent id
@@ -2192,6 +2246,64 @@ else, and its context links must keep classifying across restarts).
     both shells call — the desktop passing the canvas skill as its `extra`. A second copy is the
     drift this file warns about elsewhere: the Server Edition shipped without the per-account leg
     entirely, so a managed account there reported no agent status at all.
+  - **Shared system skills (`shareSystemSkills`, issue #643, OFF by default)** — Claude Code resolves
+    user skills as `join(CLAUDE_CONFIG_DIR ?? ~/.claude, 'skills')` (MEASURED, 2.1.266), so an
+    account dir **replaces** `~/.claude/skills` rather than adding to it and a fresh managed account
+    shows only the skills nodeterm installed (that was #438). The isolation is correct and often the
+    point; this per-account switch (Settings → Accounts) is the way back in.
+    **Each system skill is linked INDIVIDUALLY** (`<accountDir>/skills/<name>` →
+    `~/.claude/skills/<name>`), never the whole `skills` directory, and that choice is what makes
+    everything else safe: `installCanvasSkillInto` writes *into* `<configDir>/skills/`, so a
+    directory-level link would put nodeterm's canvas skill in the user's SYSTEM skills folder, and
+    "turn it off" would have to restore a directory it had first moved aside. Per-skill links keep
+    the account's `skills/` a real directory and make the off-switch a link removal.
+    MEASURED with strace: Claude Code opens a symlinked entry inside `skills/` as a directory and
+    reads its `SKILL.md` exactly like a real sibling — per-skill links are equivalent to the
+    whole-directory link for discovery, not a compromise.
+    - **Ownership is name-anchored**: an entry is ours iff it is a symlink whose target normalizes
+      to exactly `join(systemSkillsDir, <that entry's own name>)`. What ON creates is precisely what
+      OFF removes; a real directory is never ours, whatever its name — so "never delete through the
+      link" is a property of the plan (`core/claude-skill-share-core.ts`, pure + mutation-tested),
+      not a promise about the applier. Removal is `unlink` then `rmdir` (a Windows junction refuses
+      `unlink`); both fail on a real non-empty directory, which is the second line of defence.
+    - **`NODETERM_OWNED_SKILLS` (`manage-nodeterm-canvas`, `get-linked-context`) is never linked and
+      never pruned.** Their presence in an account dir is decided by nodeterm's own installers; if
+      sharing linked them, the off-switch would delete a skill the canvas-control installer had put
+      there and the two owners would fight over the name at every launch.
+    - **The realpath refusal is load-bearing.** The issue's manual workaround
+      (`mv skills skills.bak && ln -s ~/.claude/skills skills`) makes the account's `skills/`
+      RESOLVE to the system one; linking into it would plant links in the user's own folder and let
+      the off-switch delete them from there. The planner compares REAL paths and refuses
+      (`same-directory`), which also covers a linked account whose `configDir` was hand-edited to
+      `~/.claude`.
+    - **Windows uses a directory JUNCTION** (`fs.symlink(target, path, 'junction')`), not the `'dir'`
+      symlink `worktree-shared-paths.ts` must use: a junction needs neither Developer Mode nor
+      elevation, and every target here is an absolute directory — the two conditions it has. On
+      POSIX Node ignores the type. So the feature is available on every desktop platform rather than
+      gated off one.
+    - **The launch sweep re-links but NEVER removes** (`installHooksIntoLocalAccounts`). ON has real
+      work at boot (a skill added to `~/.claude/skills` since the last run; a stale link to prune);
+      OFF is a removal, and ownership here is inferred from a link's SHAPE, which cannot tell our
+      link from an identical hand-made one — and a LINKED account's dir is the user's own
+      `~/.claude-2`, where exactly that is a normal thing to find. Removal therefore happens only
+      through `claude-accounts:set-skill-sharing`, where the intent is explicit. The cost: a
+      settings.json hand-edited to `false` while the app was closed keeps its links until the switch
+      is flipped.
+    - **The switch flips the filesystem FIRST and persists the flag only if that returned** — the
+      flag is what the sweep replays, so a stored `true` whose links were never made would make the
+      switch lie until the next boot. A refusal stores nothing.
+    - **The copy says the edits flow both ways**, because a link is not a copy: editing a shared
+      skill from inside the account edits the machine's own file. A user who reads "share" as "copy"
+      finds that out by losing work. Result sentences are the pure `renderer/lib/skillSharing.ts`.
+    - **Surfaces.** Desktop: full. **Server Edition: full** — the whole implementation is core, so
+      the ws-bridge leg is a real passthrough and the machine the browser is served from is exactly
+      the machine whose `~/.claude/skills` is shared (the canvas skill is not installed there, but
+      its name stays reserved: a reserved name that is never created is inert). **SSH accounts:
+      explicitly out of scope for v1** — their config dir is on the host, so the option would have to
+      link that host's skills over the ControlMaster, with its own generated-shell proof obligation.
+      The switch is DISABLED with that reason (never hidden), and core refuses (`remote-account`) as
+      the backstop for a hand-edited settings.json. **Mobile: N/A** — the phone never mints an
+      account and carries no skills concept.
   - **Account-aware readers** — transcript resolution is scoped per account (`transcriptRootFor`
     picks the account dir's `projects/`, composite cache key includes `accountId`); the same
     threading runs through the session-name poll, restart handoff, and `ChatPanel` (the ⌘M

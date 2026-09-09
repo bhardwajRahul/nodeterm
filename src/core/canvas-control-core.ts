@@ -358,7 +358,10 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     '  path>` instead: write the brief to a file, pass the absolute path, and the session starts',
     '  with the file\'s exact contents — newlines, numbered lists and headings preserved. The file',
     '  is read when the session LAUNCHES (later than the call for an `--after`-armed node), so',
-    '  leave it in place until the station has started. Never begin a prompt with `/`: once',
+    '  leave it in place until the station has started. A long `--prompt` is SAFE on a local',
+    '  project (nodeterm spills it to a file itself), but on an SSH project pass `--prompt-file`:',
+    '  a terminal line caps at 1024 bytes on macOS, and a launch line that cannot be delivered is',
+    '  refused with a message on the node rather than half-run. Never begin a prompt with `/`: once',
     '  flattened, the agent reads the whole prompt as arguments to that slash command, your task',
     '  is never seen, and the node then sits idle looking healthy. To pick a model use `--model`,',
     '  not a leading `/model`.',
@@ -803,6 +806,13 @@ Verbs:
   collapsed to a single space before the session starts, because the prompt is passed as an
   argument on the agent CLI's launch command line and that line is typed into the pane. Two
   consequences worth planning around:
+  - **A very long \`--prompt\` is safe on a local project and risky on an SSH one.** The launch
+    line is typed into the pane and a terminal line has a hard limit (1024 bytes on macOS), past
+    which the tail is silently discarded. On a local project nodeterm writes an over-long prompt
+    to a file for you and the session starts with the same flattened text; on an SSH project it
+    cannot (the file would land on the wrong machine), so pass a long brief with
+    \`--prompt-file\` there. A launch line that cannot be delivered is refused with a message on
+    the node, never half-run.
   - **A structured brief goes through \`--prompt-file <abs path>\`.** Write the brief (numbered
     acceptance criteria, file lists, guard clauses — anything multi-line) to a file, pass the
     absolute path, and the session starts with the file's exact contents: the launch line stays

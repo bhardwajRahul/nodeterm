@@ -546,7 +546,9 @@ const api: NodeTerminalApi = {
     waitLogin: (id, ctx) => ipcRenderer.invoke(IPC.claudeAccountsWaitLogin, id, ctx),
     cancelWaitLogin: (id) => ipcRenderer.invoke(IPC.claudeAccountsCancelWait, id),
     remove: (id, ctx) => ipcRenderer.invoke(IPC.claudeAccountsRemove, id, ctx),
-    link: (configDir) => ipcRenderer.invoke(IPC.claudeAccountsLink, configDir)
+    link: (configDir) => ipcRenderer.invoke(IPC.claudeAccountsLink, configDir),
+    setSkillSharing: (id, enabled) =>
+      ipcRenderer.invoke(IPC.claudeAccountsSetSkillSharing, id, enabled)
   },
   codexAccounts: {
     add: () => ipcRenderer.invoke(IPC.codexAccountsAdd),

@@ -168,6 +168,23 @@ reporting "no sessions" on a host running thirty.
 never a substituted nearest match. A hand-editable value that is unrecognised must yield the safe
 default, never something more destructive than the default.
 
+**A node's OWNERSHIP is persisted state, never a live object.** "Is this node remote / whose host is
+it on?" must be answerable with nothing attached, because the questions that ask it — a delete, a
+kill, a cleanup — arrive precisely when nothing is: after an app restart, after the offscreen
+release, after the park timer, for a project that is not open. `PtyManager.runEndSession` read it
+off the dying in-memory `Session` instead, so an SSH node deleted with no live client had its remote
+`kill-session` skipped **in silence** and its one kill sent to the LOCAL tmux socket, where a
+`requireRemote` node has nothing; the node left the canvas looking deleted and its `nt-<id>` kept
+running on the host. Ask the machine-local index (`workspaceStore.sshProjectIdForNode`), and treat a
+live handle as the *complement* of that answer, not its source.
+
+**A side effect you could not deliver is not a side effect you performed.** The `ok:false` rule is
+not only for reads. `catch {}` around a remote kill folded "tmux says there is no such session" (an
+ANSWER) into "the ControlMaster is down" (a NON-answer, session still running). Classify the failure
+— and when the work genuinely cannot be done now, either refuse the action with a reason or write
+the debt down and settle it later (`core/pending-remote-kills.ts`). Silently dropping it is the one
+option that is never available.
+
 **A Server Edition agent owns only nodes it freshly opened in this server run.** The
 creator ledger is process-local and must never be rebuilt from `.nodeterm/project.json`, titles,
 hook history, or a surviving tmux name: all are writable or stale. A restart therefore clears
@@ -187,6 +204,14 @@ come from git-shared JSON and can end up interpolated into a shell command line.
 **Test generated shell for real.** If you generate a shell command, run it under an actual
 `/bin/sh` against a fixture tree. A composed fixture will not tell you that `echo ##MEM` prints an
 empty line because `#` starts a comment.
+
+**A shared agent daemon is live-session infrastructure.** Codex's app-server control socket is
+shared by every `--remote` TUI in an account scope, so stopping or replacing one daemon disconnects
+every attached canvas node. A managed launcher must keep the already-bound thread under a bounded
+supervisor: resume only when protocol health failed or the known socket generation changed, never
+loop an unrelated client error, and never replay the original prompt after reconnect. Probe a
+responsive daemon before invoking lifecycle repair; stale PID bookkeeping is not permission to kill
+working sessions. See `docs/shared-codex-node-identity.md`.
 
 **Credentials never ride argv — local or SSH.** Not a tmux `-e` pair, not `curl -H`, not a remote
 command string. `/proc/<pid>/cmdline` is mode 444 on a stock Linux, and a remote command line is argv
@@ -208,6 +233,20 @@ wire sent.
 Put the rule in one predicate under `src/shared` and have every mint site ask it, and derive the
 things that follow from it (a node's color, say) from that same call rather than re-deriving the
 condition per caller.
+
+**A feature that creates links owes an ownership rule, and it must be a property of the plan.**
+"Share `~/.claude/skills` with this account" (issue #643) links each system skill into a managed
+account's own `skills/` and removes those links again when switched off — one wrong removal deletes
+somebody's real skills folder. Three habits made it safe and they generalize: link the LEAVES, not
+the containing directory (nodeterm writes its own canvas skill into `<configDir>/skills/`, so a
+directory-level link would have written it into the user's system folder); decide ownership by an
+anchored SHAPE (a symlink at `<name>` pointing at `<system>/<name>`) so what the on-switch creates
+is exactly what the off-switch removes, and a real directory can never qualify; and compare
+REALPATHS before acting, because the hand-made version of the same feature makes the two directories
+one and linking into it would plant links in the folder you are about to clean up. Verify the
+removal against a real filesystem with real symlinks and real content — a mocked `fs` agrees with
+whatever the code believed. And a launch-time sweep may re-create, never delete: ownership inferred
+from shape cannot tell your link from an identical one the user made by hand.
 
 **Do not take scrolling away from tmux.** It owns the mouse, the scrollback and the alternate
 screen. A previous design moved that into the emulator and failed structurally; `CLAUDE.md` explains

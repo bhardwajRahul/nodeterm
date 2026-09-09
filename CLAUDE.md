@@ -2246,6 +2246,64 @@ else, and its context links must keep classifying across restarts).
     both shells call — the desktop passing the canvas skill as its `extra`. A second copy is the
     drift this file warns about elsewhere: the Server Edition shipped without the per-account leg
     entirely, so a managed account there reported no agent status at all.
+  - **Shared system skills (`shareSystemSkills`, issue #643, OFF by default)** — Claude Code resolves
+    user skills as `join(CLAUDE_CONFIG_DIR ?? ~/.claude, 'skills')` (MEASURED, 2.1.266), so an
+    account dir **replaces** `~/.claude/skills` rather than adding to it and a fresh managed account
+    shows only the skills nodeterm installed (that was #438). The isolation is correct and often the
+    point; this per-account switch (Settings → Accounts) is the way back in.
+    **Each system skill is linked INDIVIDUALLY** (`<accountDir>/skills/<name>` →
+    `~/.claude/skills/<name>`), never the whole `skills` directory, and that choice is what makes
+    everything else safe: `installCanvasSkillInto` writes *into* `<configDir>/skills/`, so a
+    directory-level link would put nodeterm's canvas skill in the user's SYSTEM skills folder, and
+    "turn it off" would have to restore a directory it had first moved aside. Per-skill links keep
+    the account's `skills/` a real directory and make the off-switch a link removal.
+    MEASURED with strace: Claude Code opens a symlinked entry inside `skills/` as a directory and
+    reads its `SKILL.md` exactly like a real sibling — per-skill links are equivalent to the
+    whole-directory link for discovery, not a compromise.
+    - **Ownership is name-anchored**: an entry is ours iff it is a symlink whose target normalizes
+      to exactly `join(systemSkillsDir, <that entry's own name>)`. What ON creates is precisely what
+      OFF removes; a real directory is never ours, whatever its name — so "never delete through the
+      link" is a property of the plan (`core/claude-skill-share-core.ts`, pure + mutation-tested),
+      not a promise about the applier. Removal is `unlink` then `rmdir` (a Windows junction refuses
+      `unlink`); both fail on a real non-empty directory, which is the second line of defence.
+    - **`NODETERM_OWNED_SKILLS` (`manage-nodeterm-canvas`, `get-linked-context`) is never linked and
+      never pruned.** Their presence in an account dir is decided by nodeterm's own installers; if
+      sharing linked them, the off-switch would delete a skill the canvas-control installer had put
+      there and the two owners would fight over the name at every launch.
+    - **The realpath refusal is load-bearing.** The issue's manual workaround
+      (`mv skills skills.bak && ln -s ~/.claude/skills skills`) makes the account's `skills/`
+      RESOLVE to the system one; linking into it would plant links in the user's own folder and let
+      the off-switch delete them from there. The planner compares REAL paths and refuses
+      (`same-directory`), which also covers a linked account whose `configDir` was hand-edited to
+      `~/.claude`.
+    - **Windows uses a directory JUNCTION** (`fs.symlink(target, path, 'junction')`), not the `'dir'`
+      symlink `worktree-shared-paths.ts` must use: a junction needs neither Developer Mode nor
+      elevation, and every target here is an absolute directory — the two conditions it has. On
+      POSIX Node ignores the type. So the feature is available on every desktop platform rather than
+      gated off one.
+    - **The launch sweep re-links but NEVER removes** (`installHooksIntoLocalAccounts`). ON has real
+      work at boot (a skill added to `~/.claude/skills` since the last run; a stale link to prune);
+      OFF is a removal, and ownership here is inferred from a link's SHAPE, which cannot tell our
+      link from an identical hand-made one — and a LINKED account's dir is the user's own
+      `~/.claude-2`, where exactly that is a normal thing to find. Removal therefore happens only
+      through `claude-accounts:set-skill-sharing`, where the intent is explicit. The cost: a
+      settings.json hand-edited to `false` while the app was closed keeps its links until the switch
+      is flipped.
+    - **The switch flips the filesystem FIRST and persists the flag only if that returned** — the
+      flag is what the sweep replays, so a stored `true` whose links were never made would make the
+      switch lie until the next boot. A refusal stores nothing.
+    - **The copy says the edits flow both ways**, because a link is not a copy: editing a shared
+      skill from inside the account edits the machine's own file. A user who reads "share" as "copy"
+      finds that out by losing work. Result sentences are the pure `renderer/lib/skillSharing.ts`.
+    - **Surfaces.** Desktop: full. **Server Edition: full** — the whole implementation is core, so
+      the ws-bridge leg is a real passthrough and the machine the browser is served from is exactly
+      the machine whose `~/.claude/skills` is shared (the canvas skill is not installed there, but
+      its name stays reserved: a reserved name that is never created is inert). **SSH accounts:
+      explicitly out of scope for v1** — their config dir is on the host, so the option would have to
+      link that host's skills over the ControlMaster, with its own generated-shell proof obligation.
+      The switch is DISABLED with that reason (never hidden), and core refuses (`remote-account`) as
+      the backstop for a hand-edited settings.json. **Mobile: N/A** — the phone never mints an
+      account and carries no skills concept.
   - **Account-aware readers** — transcript resolution is scoped per account (`transcriptRootFor`
     picks the account dir's `projects/`, composite cache key includes `accountId`); the same
     threading runs through the session-name poll, restart handoff, and `ChatPanel` (the ⌘M

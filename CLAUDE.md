@@ -1551,13 +1551,18 @@ else, and its context links must keep classifying across restarts).
     builder), because the failure is silent and one-sided: a remote shim carrying the prelude keeps
     working, and the only symptom is this machine's userData layout sitting in a file on someone
     else's server. **The prelude is shared; the RECORD it reads is desktop-only.** Those writers are
-    the two hook-server handlers `src/main/index.ts` registers, and
-    `src/server/handlers/index.ts` deliberately registers neither — so on the Server Edition the
-    file is byte-identical, the signing secret is armed, and the resolver still finds nothing and
-    takes its fallback. Coherent rather than missing: that shell answers `shared: false`
-    (`UNKNOWN_CODEX_IDENTITY_CAPS`), so its Codex nodes run their own app-server and no tool shell
-    needs recovering. It turns into a real gap only when that edition grows the shared app-server,
-    and the fix is the two registrations.
+    the two hook-server handlers `src/main/index.ts` registers — and, since the daemon-reset work,
+    the ones `wireServerCodexSharedIdentity` (`src/server/codex-shared-identity.ts`) registers at
+    Server Edition boot as well. That shell used to answer a flat `shared: false`
+    (`UNKNOWN_CODEX_IDENTITY_CAPS`) as a DELIBERATE degrade: its Codex nodes ran their own
+    app-server, so no tool shell needed recovering. It no longer does. The Server Edition has the
+    same local app-server, the same signed node tokens and the same persistent canvas store, so it
+    wires the shared-thread spine **after** those secrets exist and its panes get the same
+    supervisor. The registration is deliberately late for that reason, and `registerCodexIdentityIpc()`
+    now answers from the live resolver instead of a constant — an early browser caller waits for the
+    refresh rather than being pinned to a false "plain Codex" answer for the whole app run. What
+    remains desktop-only is the record's REMOTE leg (SSH shims carry no record root or prelude, the
+    paragraph above).
   - **That prelude EXPORTS WHAT THE RECORD SAYS — it never decides.** `NODETERM_AGENT_ID` and
     `NODETERM_CANVAS_CONTROL` were once constants there (`codex`, granted); both are
     `buildPtyEnv`'s answers about the PANE, which labels a node with its OWN agent id

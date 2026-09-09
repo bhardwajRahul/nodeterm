@@ -219,7 +219,7 @@ import {
 } from '../core/remote-ssh/control-master'
 import { planRemoteWorkspacePoll } from './remote-workspace-poll'
 import { sessionName } from '../core/tmux-naming'
-import { posixQuote, type SshConnection } from '../shared/ssh'
+import { posixQuote, sshHostKey, type SshConnection } from '../shared/ssh'
 import { buildHandoff, type HandoffRemote } from './handoff'
 import { initContextLink, setNodeTranscript } from '../core/context-link'
 import { transcriptPathOf } from '../core/context-link-core'
@@ -496,6 +496,32 @@ workspaceStore.onPersist = () => {
   workspaceWatcher.sync()
   refreshNodeTokens()
 }
+// "Which host owns this node?", answered WITHOUT a live session — the persisted index, not the
+// in-memory `Session`. A delete arrives precisely when there may be nothing attached (an app
+// restart, the offscreen release, the park timer, a project that is not even open), and core used
+// to read remoteness off the dying session alone: the remote `kill-session` was then skipped in
+// silence and the node's `nt-<id>` kept running on the host. See core/remote-end.ts.
+//
+// Wired here rather than in `ptyManager.init` because it needs BOTH the workspace store and the
+// SSH-project manager, and the manager is created much later — `sshProjectManager` is read inside
+// the closure, so an early delete simply sees no live master and records the debt.
+// The Server Edition wires none: it has no SSH-project manager, so its deletes stay local.
+ptyManager.setRemoteNodeOwner((nodeId) => {
+  const projectId = workspaceStore.sshProjectIdForNode(nodeId)
+  if (!projectId) return null
+  // The persisted endpoint is what makes the host NAMEABLE while it is unreachable — without it a
+  // debt could not be keyed, and an undeliverable kill would have to be dropped again.
+  const server = workspaceStore.projectTargetInfo(projectId)?.ssh?.server
+  if (!server) return null
+  // The LIVE conn (not the persisted one) when there is a master: it carries this run's pinned
+  // agent socket and trust provenance, and it is the same handle `killSessions` runs over.
+  const ref = sshProjectManager?.refForProject(projectId)
+  return {
+    projectId,
+    hostKey: sshHostKey(ref?.conn ?? server),
+    remote: ref ? { conn: ref.conn, controlPath: ref.controlPath } : undefined
+  }
+})
 const gitService = new GitService()
 
 // Project setup/archive runner (SDD: 2026-08-19-project-settings-trust). The trust store is keyed

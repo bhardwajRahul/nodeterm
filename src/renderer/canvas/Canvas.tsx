@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { playSfx, primeSfx } from '@renderer/lib/sfx'
+import { fanoutStillWorking } from '@renderer/lib/completionAlert'
 import {
   addEdge,
   applyEdgeChanges,
@@ -91,9 +92,13 @@ import { Dock } from '../components/Dock'
 import { TabBar } from '../components/TabBar'
 import { ContextMenu, type MenuItem } from '../components/ContextMenu'
 import { CommandPalette, type Command } from '../components/CommandPalette'
+import { Tooltip } from '../components/Tooltip'
 import {
-  IconCollapse,
   IconBranch,
+  IconCanvasView,
+  IconClose,
+  IconCollapse,
+  IconDino,
   IconDuplicate,
   IconEditor,
   IconExplorer,
@@ -101,22 +106,23 @@ import {
   IconGear,
   IconGrid,
   IconGroup,
-  IconDino,
   IconJump,
   IconKanban,
-  IconCanvasView,
   IconLock,
   IconMarkdown,
-  IconReload,
-  IconSmiley,
-  IconPower,
+  IconMinus,
   IconNote,
   IconPhone,
+  IconPlus,
+  IconPower,
   IconProject,
+  IconReload,
   IconRemote,
   IconSave,
+  IconSearch,
   IconSelectAll,
   IconSessions,
+  IconSmiley,
   IconSwitch,
   IconTerminal,
   IconTrash,
@@ -216,6 +222,8 @@ import {
 } from '../lib/globalKeybindings'
 import { isTerminalTarget, type ContextElement } from '../lib/keyContext'
 import { installTerminalFocusMirror } from '../lib/terminalFocusMirror'
+import { nodeToRefocus } from '../lib/focusRestore'
+import { openDialogCount } from '../components/dialog-stack'
 import {
   applyWindowTitle,
   composeWindowTitle,
@@ -413,6 +421,11 @@ import {
 } from '@shared/agents/config'
 import { withPermissionMode } from '@shared/agents/approval-mode'
 import { promptFilePathError } from '@shared/agents/launch'
+import {
+  encodeUtf8Base64,
+  shouldSpillPrompt,
+  spillPromptToFile
+} from '../lib/promptSpill'
 import { parseTeamSpec } from '../lib/teamSpec'
 import { relativeTime } from '../lib/relativeTime'
 import { AgentIcon } from '../lib/agentIcons'
@@ -740,6 +753,11 @@ const offsetFrom = (
 }
 
 
+/** Zoom-step tween. One constant because the same step sits on two surfaces, the dock and the
+ *  bottom-left controls, and a user who reaches for whichever is nearer must not get two
+ *  different gestures. */
+const ZOOM_STEP_DURATION_MS = 150
+
 // A canvas-control request whose source node lives in another project switches that project in
 // first, and the active-project effect hydrates React Flow ASYNCHRONOUSLY — so the handler waits
 // for the node to appear instead of reading an empty canvas one tick too early. Bounded well under
@@ -960,9 +978,9 @@ export function Canvas() {
     return () => clearTimeout(t)
   }, [notice])
   const [zoomPct, setZoomPct] = useState(100)
-  // Canvas lock (bottom-left Controls): freezes the viewport against GESTURES — pan (drag +
+  // Canvas lock (bottom-left Controls): freezes the viewport against GESTURES: pan (drag +
   // scroll), zoom (pinch / Cmd+wheel / double-click), node dragging and edge connecting.
-  // Deliberate button clicks (Controls +/−/fit, dock zoom, ⌘K fit) still work, matching React
+  // Deliberate button clicks (Controls +/-/fit, dock zoom, ⌘K fit) still work, matching React
   // Flow's own lock convention. Transient by design: a lock that survives restart reads as
   // "the app is frozen" to whoever opens it next.
   const [canvasLocked, setCanvasLocked] = useState(false)
@@ -7500,6 +7518,56 @@ export function Canvas() {
     []
   )
 
+  // The settings page is React state, and the listener below is registered once — so it reads the
+  // flag through a ref rather than taking a dep and re-registering on every open/close.
+  const settingsOpenRef = useRef(settingsOpen)
+  settingsOpenRef.current = settingsOpen
+
+  // Cmd+Tab back into the app: hand the keyboard to the terminal that last had it (issue #557).
+  // Terminal focus is pointer-driven (the hover guard blurs xterm on `mouseleave`), so a pointer
+  // parked on a second display leaves the app with NO terminal focused, and returning gives the
+  // canvas dispatcher every keystroke, where a bare Backspace is `canvas.deleteSelection`. The
+  // refusals (a modal, the board or the settings page is up, a text surface or a terminal already
+  // holds focus) are the pure `nodeToRefocus`; this effect is the DOM read plus the request.
+  //
+  // Deferred by a macrotask rather than read inline: Chromium restores its own previously focused
+  // element around window activation, and deciding before it has settled would read `<body>` and
+  // steal focus from the settings field the user actually left the app from.
+  //
+  // `{ ack: false }`: coming back to the window is not evidence that the user has SEEN the node,
+  // and the ACK reaches past this machine (the notch capsule and the paired phone's Live Activity).
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const onWindowFocus = () => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => {
+        // Only the nodes we can prove belong to the canvas on screen: `nodesRef` and
+        // `activeProjectId` do not turn over in one commit, and an id we cannot place must not
+        // become a request that waits for its project to come back.
+        const activeProjectId = useProjects.getState().activeProjectId
+        const liveIds = new Set(
+          nodesProjectIdRef.current === activeProjectId ? nodesRef.current.map((n) => n.id) : []
+        )
+        const target = nodeToRefocus({
+          lastNodeId: useTerminalFocus.getState().lastNodeId,
+          activeElement: document.activeElement as unknown as ContextElement | null,
+          openDialogs: openDialogCount(),
+          boardOpen: isKanbanOpen(activeProjectId),
+          settingsOpen: settingsOpenRef.current,
+          liveIds
+        })
+        if (target) {
+          useTerminalFocus.getState().request(target, { ack: false })
+        }
+      }, 0)
+    }
+    window.addEventListener('focus', onWindowFocus)
+    return () => {
+      if (timer) clearTimeout(timer)
+      window.removeEventListener('focus', onWindowFocus)
+    }
+  }, [])
+
   // Active session → native window title (issue #414, opt-in `settings.windowTitleActiveSession`):
   // lets window-title-based time trackers (ActivityWatch) tell sessions apart. Two latest-wins
   // signals feed the active node — keyboard focus landing inside a node's DOM (the tracker), and
@@ -9758,6 +9826,21 @@ export function Canvas() {
         })()
       const ctlSsh = ctlProject?.ssh
       const sshFor = (cwd?: string) => nodeSshFor(ctlSsh, cwd)
+      // A prompt too long for a typed line goes into a file the pane's own shell reads (#706).
+      // See lib/promptSpill.ts for the budget and for why an SSH project is excluded: the file
+      // would land on THIS machine while the pane runs on the host. Fails open in every
+      // direction — a spill we cannot perform returns the prompt inline, exactly as before, and
+      // the delivery layer refuses a truncated line rather than submitting half of it.
+      const spillLongPrompt = async (
+        prompt: string | undefined
+      ): Promise<{ prompt?: string; promptFile?: string }> => {
+        if (!shouldSpillPrompt(prompt, !ctlSsh)) return { prompt }
+        const path = await spillPromptToFile(prompt as string, {
+          saveUpload: (n, d) => api.files.saveUpload(n, d),
+          encodeBase64: encodeUtf8Base64
+        })
+        return path ? { promptFile: path } : { prompt }
+      }
       // Place opened nodes BELOW the source and rope them to it (source flow-out → target
       // flow-in), mirroring how subagent/loop nodes attach — so they read as "hanging off" the
       // conversation instead of landing on top of unrelated nodes. `placeBelow` returns a node
@@ -10176,6 +10259,10 @@ export function Canvas() {
             // See the same list in open-terminal: which of these nodes end up ARMED is
             // `armAfter`'s per-node decision, recorded as it builds them.
             const queuedIds: string[] = []
+            // A `--prompt` over the typed-line budget is spilled to a file and delivered through
+            // the same `"$(cat …)"` substitution `--prompt-file` uses (#706). An explicit
+            // `--prompt-file` already took that route and is passed through untouched.
+            const promptLaunch = await spillLongPrompt(promptFile ? undefined : args.prompt)
             const make = (i: number): CanvasNode => {
               const node = armAfter(
                 createAgentNode(
@@ -10183,7 +10270,7 @@ export function Canvas() {
                   nodesRef.current.length + i,
                   agentCwd,
                   placeBelow(i),
-                  args.prompt,
+                  promptLaunch.prompt,
                   sshFor(agentCwd),
                   account,
                   activePermissionMode(agentId),
@@ -10194,7 +10281,7 @@ export function Canvas() {
                   // interpolation site and emits nothing for an agent outside MODEL_SWITCH_CAPABLE,
                   // so an unsupported agent's command line stays byte-identical.
                   args.model,
-                  promptFile
+                  promptFile ?? promptLaunch.promptFile
                 ),
                 after ?? [],
                 undefined,
@@ -10548,24 +10635,38 @@ export function Canvas() {
             // Every node in the panel (reviewers + judge) runs `reviewAgent`, so one resolution
             // serves them all — gated on that agent, not on the caller's.
             const vMode = activePermissionMode(reviewAgent)
+            // A lens brief assembles to MORE than a typed line can carry — measured 1045 and 1044
+            // bytes for the `security` and `tests` defaults against a 1024-byte macOS MAX_CANON,
+            // with a nine-character node title and no `--focus` at all (#706). So every panel
+            // prompt goes through the spill before a node is built, and the awaits are done up
+            // front because the factories below are synchronous.
+            const lensLaunches = await Promise.all(
+              lenses.map((lens) =>
+                spillLongPrompt(
+                  verifyLensPrompt({
+                    lens,
+                    targetTitle,
+                    targetId,
+                    agentId: reviewAgent,
+                    shimPath: vShim,
+                    focus: args.focus
+                  })
+                )
+              )
+            )
             const reviewers = lenses.map((lens, i) => {
               const node = createAgentNode(
                 reviewAgent,
                 live.length + i,
                 targetCwd,
                 placeBelow(i),
-                verifyLensPrompt({
-                  lens,
-                  targetTitle,
-                  targetId,
-                  agentId: reviewAgent,
-                  shimPath: vShim,
-                  focus: args.focus
-                }),
+                lensLaunches[i].prompt,
                 sshFor(targetCwd),
                 vAccount,
                 vMode,
-                vStore.activeProjectId
+                vStore.activeProjectId,
+                undefined,
+                lensLaunches[i].promptFile
               )
               return armAfter(
                 { ...node, data: { ...node.data, title: `Verify: ${lens}`, titleAuto: false } },
@@ -10573,6 +10674,14 @@ export function Canvas() {
               )
             })
             const reviewerIds = reviewers.map((r) => r.id)
+            const judgeLaunch = await spillLongPrompt(
+              verifySynthesisPrompt({
+                lenses,
+                targetTitle,
+                agentId: reviewAgent,
+                shimPath: vShim
+              })
+            )
             const judge = wantJudge
               ? armAfter(
                   (() => {
@@ -10581,16 +10690,13 @@ export function Canvas() {
                       live.length + lenses.length,
                       targetCwd,
                       placeBelow(lenses.length),
-                      verifySynthesisPrompt({
-                        lenses,
-                        targetTitle,
-                        agentId: reviewAgent,
-                        shimPath: vShim
-                      }),
+                      judgeLaunch.prompt,
                       sshFor(targetCwd),
                       vAccount,
                       vMode,
-                      vStore.activeProjectId
+                      vStore.activeProjectId,
+                      undefined,
+                      judgeLaunch.promptFile
                     )
                     return { ...j, data: { ...j.data, title: 'Verify: verdict', titleAuto: false } }
                   })(),
@@ -10705,6 +10811,14 @@ export function Canvas() {
               teamStore.getProject(teamStore.activeProjectId ?? ''),
               useSettings.getState().settings.claudeAccounts
             )
+            // Same typed-line budget as open-agent (#706): a role brief long enough to truncate
+            // the launch line is spilled to a file first. A role that named its own promptFile
+            // is passed through untouched. Awaited up front — the factory below is synchronous.
+            const roleLaunches = await Promise.all(
+              roles.map((r) =>
+                r.promptFile ? spillLongPrompt(undefined) : spillLongPrompt(r.prompt)
+              )
+            )
             // Build members; fixed role titles pin the node name (titleAuto off).
             const members = roles.map((r, i) => {
               // Roles may name different agents, so the mode is resolved PER member: claude's
@@ -10716,7 +10830,7 @@ export function Canvas() {
                 live.length + i,
                 srcCwd,
                 placeBelow(i),
-                r.prompt,
+                roleLaunches[i].prompt,
                 sshFor(srcCwd),
                 teamAccount,
                 activePermissionMode(memberAgent),
@@ -10726,7 +10840,7 @@ export function Canvas() {
                 r.model,
                 // Per-role promptFile (parser-validated + existence-checked above); wins over
                 // `prompt` in the assembler.
-                r.promptFile
+                r.promptFile ?? roleLaunches[i].promptFile
               )
               return r.title ? { ...node, data: { ...node.data, title: r.title, titleAuto: false } } : node
             })
@@ -11968,10 +12082,19 @@ export function Canvas() {
       if (e.account) cs.setAccount(e.nodeId, { ...e.account, remote: observationIsRemote(originOf(e.nodeId)) })
       const agentLabel = agentConfig(e.agentId)?.label ?? 'Agent'
       // "<folder> — Claude finished" + last assistant message as the body.
-      const alert = (statusText: string, fallbackBody: string, sound: 'done' | 'needsYou') => {
+      const alert = (
+        statusText: string,
+        fallbackBody: string,
+        sound: 'done' | 'needsYou',
+        opts?: { quiet?: boolean }
+      ) => {
         // Unread unless the user is actively in this node's terminal (focused window +
         // this node is the active terminal). So a finish while you're in another terminal,
         // or with nothing focused, still flags unread.
+        //
+        // `opts.quiet` reaches this function BELOW this block on purpose (issue #708): it silences
+        // the two INTERRUPTS (chime, OS notification) and never the unread record or its ack. See
+        // `fanoutStillWorking` — a dot is a different fact from a chime.
         const watching = document.hasFocus() && cs.activeId === e.nodeId
         if (!watching) cs.markUnread(e.nodeId)
         // Watched it finish? Then it is already read. Nothing marks it unread in this branch, so
@@ -11979,6 +12102,9 @@ export function Canvas() {
         // green blob and the phone's Live Activity would keep glowing for a turn the user sat and
         // watched end. The mirror no-ops when there is no unresolved done event.
         else if (sound === 'done') void window.nodeTerminal.ackDone(e.nodeId)
+        // Everything from here down is an INTERRUPT, and this is where a quiet alert stops. The
+        // unread dot and its ack above are deliberately on the other side of this line.
+        if (opts?.quiet) return
         // Sound first: it is the one alert that also fires while you're in the app but looking at
         // another node — the case OS notifications deliberately skip.
         const snd = useSettings.getState().settings
@@ -12046,7 +12172,16 @@ export function Canvas() {
             // a renderer reload. Gating the badge but not the sound/notification would half-enforce
             // the flag and leave the expensive error — a false completion — fully reachable.
             cs.bumpLoop(e.nodeId, e.lastMessage) // count loop iterations + summary (no-op if not looping)
-            alert('finished', `${agentLabel} finished its turn.`, 'done')
+            // Issue #708: a turn that ended only because a BACKGROUND SUBAGENT reported back is
+            // not the fan-out finishing — the parent is about to be woken again by the next one.
+            // Read fresh (not the `an` snapshot taken at listener entry): `clearFinishedForParent`
+            // may have run just above. It only drops DONE cards, so the verdict is the same either
+            // way, and depending on that is exactly the kind of coupling that rots.
+            const fanoutBusy = fanoutStillWorking(
+              Object.values(useAgentNodes.getState().byId),
+              e.nodeId
+            )
+            alert('finished', `${agentLabel} finished its turn.`, 'done', { quiet: fanoutBusy })
           }
           if (e.state === 'blocked')
             alert('needs input', `${agentLabel} needs permission to continue.`, 'needsYou')
@@ -13183,9 +13318,10 @@ export function Canvas() {
             <button
               className="announce-banner__close"
               title="Dismiss"
+              aria-label="Dismiss"
               onClick={() => setMigrationNote(null)}
             >
-              ✕
+              <IconClose />
             </button>
           </div>
         )}
@@ -13198,9 +13334,10 @@ export function Canvas() {
             <button
               className="announce-banner__close"
               title="Dismiss"
+              aria-label="Dismiss"
               onClick={() => setSyncNote(null)}
             >
-              ✕
+              <IconClose />
             </button>
           </div>
         )}
@@ -13213,9 +13350,10 @@ export function Canvas() {
             <button
               className="announce-banner__close"
               title="Dismiss"
+              aria-label="Dismiss"
               onClick={() => setCopyError(null)}
             >
-              ✕
+              <IconClose />
             </button>
           </div>
         )}
@@ -13244,9 +13382,10 @@ export function Canvas() {
             <button
               className="announce-banner__close"
               title="Dismiss"
+              aria-label="Dismiss"
               onClick={() => setNotice(null)}
             >
-              ✕
+              <IconClose />
             </button>
           </div>
         )}
@@ -13388,7 +13527,7 @@ export function Canvas() {
           title="Command palette"
           onClick={() => setPaletteOpen(true)}
         >
-          <span className="cluster-search__icon">⌕</span>
+          <IconSearch />
           {paletteChip && <span className="kbd">{paletteChip}</span>}
         </button>
         <button title={commandTooltip('Explorer', 'panel.explorer')} onClick={() => showExplorer('toggle')}>
@@ -13554,14 +13693,38 @@ export function Canvas() {
               mounted in the experimental 'shared' renderer mode; nothing about it exists for the
               default modes. */}
           {glyphLayerActive && <SharedGlyphLayer />}
-          <Controls showInteractive={false} position="bottom-left" onFitView={fitAll}>
-            <ControlButton
-              className={`canvas-lock-btn${canvasLocked ? ' locked' : ''}`}
-              title={canvasLocked ? 'Unlock view (pan/zoom)' : 'Lock view (pan/zoom) — nodes stay movable'}
-              onClick={() => setCanvasLocked((v) => !v)}
+          {/* The library's own zoom/fit glyphs are swapped for the shared icon set so this cluster
+              matches every other floating control; the actions behind them are unchanged. The
+              tooltips open to the RIGHT rather than upward like the dock's: this is a vertical
+              stack, so an upward bubble covers the button above the one being pointed at. */}
+          <Controls showZoom={false} showFitView={false} showInteractive={false} position="bottom-left">
+            <Tooltip label="Zoom in" placement="right">
+              <ControlButton aria-label="Zoom in" onClick={() => zoomIn({ duration: ZOOM_STEP_DURATION_MS })}>
+                <IconPlus />
+              </ControlButton>
+            </Tooltip>
+            <Tooltip label="Zoom out" placement="right">
+              <ControlButton aria-label="Zoom out" onClick={() => zoomOut({ duration: ZOOM_STEP_DURATION_MS })}>
+                <IconMinus />
+              </ControlButton>
+            </Tooltip>
+            <Tooltip label="Fit view" placement="right">
+              <ControlButton aria-label="Fit view" onClick={fitAll}>
+                <IconFit />
+              </ControlButton>
+            </Tooltip>
+            <Tooltip
+              label={canvasLocked ? 'Unlock view (pan/zoom)' : 'Lock view (pan/zoom); nodes stay movable'}
+              placement="right"
             >
-              {canvasLocked ? <IconLock /> : <IconUnlock />}
-            </ControlButton>
+              <ControlButton
+                className={`canvas-lock-btn${canvasLocked ? ' locked' : ''}`}
+                aria-label={canvasLocked ? 'Unlock view' : 'Lock view'}
+                onClick={() => setCanvasLocked((v) => !v)}
+              >
+                {canvasLocked ? <IconLock /> : <IconUnlock />}
+              </ControlButton>
+            </Tooltip>
           </Controls>
           {/* Peer cursors live INSIDE <ReactFlow>: PresenceLayer uses ViewportPortal +
               useReactFlow, which throw outside the provider — and cursors are flow coordinates. */}
@@ -14142,8 +14305,8 @@ export function Canvas() {
         onAddWorktree={() => openWorktreeDialog(null)}
         onSave={persist}
         onFitView={fitAll}
-        onZoomIn={() => zoomIn({ duration: 150 })}
-        onZoomOut={() => zoomOut({ duration: 150 })}
+        onZoomIn={() => zoomIn({ duration: ZOOM_STEP_DURATION_MS })}
+        onZoomOut={() => zoomOut({ duration: ZOOM_STEP_DURATION_MS })}
         onZoomTo={zoomToPct}
         onDictate={toggleDictation}
         dictateActive={dictationOpen}

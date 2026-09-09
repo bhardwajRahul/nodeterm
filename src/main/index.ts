@@ -71,6 +71,7 @@ import {
   type AgentMessagingDeps
 } from '../core/agents/agent-messaging'
 import type { RemoteLogExec } from '../core/board-log'
+import type { TranscriptPresence } from '../shared/types'
 import { boardLogRemotePath } from '../core/board-log'
 import { PtyManager } from '../core/pty-manager'
 import { WorkspaceStore } from '../core/workspace-store'
@@ -2363,6 +2364,66 @@ app.whenReady().then(async () => {
   }
 
   /**
+   * Does a remote node's transcript still exist ON THE HOST — `present` / `absent` / `unknown` —
+   * or `null` when this is not a remote session at all (take the local path).
+   *
+   * `remoteTranscriptRefFor` above cannot answer this: it collapses "not a remote session", "no
+   * resolved home", "the ssh call failed" and "the host looked and there is nothing" into one
+   * `undefined`, which is correct for a READER (they all fall back) and wrong for the caller that
+   * acts on absence. `locateRemoteTranscriptCommand` was already written for exactly this
+   * distinction — it exits 0 on a clean miss, "so no transcript is an ANSWER, not a failed ssh"
+   * — and that is the property this reads.
+   *
+   * Every step that cannot decide answers `unknown`, never `absent`. The one caller drops a
+   * `--resume <id>` on `absent`, and a momentarily dead ControlMaster must not be able to look
+   * like a deleted conversation.
+   */
+  const remoteTranscriptPresence = async (
+    sessionId: string,
+    accountId: string | undefined,
+    nodeId: string | undefined
+  ): Promise<TranscriptPresence | null> => {
+    if (!nodeId) return null
+    const rt = ptyManager.sshRemoteForNode(nodeId)
+    // Not a remote session — the caller takes the LOCAL path, which is the right disk to read.
+    if (!rt) return null
+    // From here on the session IS remote, so every failure is `unknown`: falling back to the
+    // local resolver would search this machine for a file that only lives on the host.
+    if (remoteTranscriptBySession.has(sessionId)) return 'present'
+    if (!sshProjectManager) return 'unknown'
+    const remoteHome = sshProjectManager.remoteHomeForControlPath(rt.controlPath)
+    if (!remoteHome) return 'unknown'
+    let accountDir: string | undefined
+    if (accountId) {
+      // A hand-edited project.json can carry any string; the helper validates and throws.
+      try {
+        accountDir = remoteAccountConfigDirAbs(remoteHome, accountId)
+      } catch {
+        accountDir = undefined
+      }
+    }
+    const cmd = locateRemoteTranscriptCommand(
+      remoteTranscriptRoots(remoteHome, accountDir),
+      undefined,
+      sessionId
+    )
+    if (!cmd) return 'unknown'
+    try {
+      const { code, stdout } = await sshProjectManager.sshRun(
+        childArgs(rt.conn, rt.controlPath, cmd)
+      )
+      if (code !== 0) return 'unknown'
+      const located = parseLocatedTranscript(stdout)
+      // Jailed exactly like a hook-supplied path: a located path we would refuse to READ must not
+      // be reported as a transcript that exists either.
+      if (located && isSafeRemoteTranscriptPath(located, remoteHome)) return 'present'
+      return located ? 'unknown' : 'absent'
+    } catch {
+      return 'unknown'
+    }
+  }
+
+  /**
    * Read a remote transcript through a ref, forgetting refs WE located once they stop reading.
    * `cap` is the tail window in bytes; it defaults to the full reader's cap, so every caller that
    * wants a transcript to READ is unchanged. A caller that only wants to know how the last few
@@ -2394,7 +2455,9 @@ app.whenReady().then(async () => {
     readRemote: async ({ sessionId, cwd, accountId, nodeId }) => {
       const ref = await remoteTranscriptRefFor(sessionId, cwd, accountId, nodeId)
       return ref ? await readRemoteTranscript(sessionId!, ref) : null
-    }
+    },
+    remoteExists: async ({ sessionId, accountId, nodeId }) =>
+      sessionId ? await remoteTranscriptPresence(sessionId, accountId, nodeId) : null
   })
 
   initTranscriptIndex(() => settingsStore.get().claudeAccounts ?? [])

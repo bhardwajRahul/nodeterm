@@ -162,7 +162,11 @@ bug.
 
 **A failed read is never evidence of absence.** "Could not measure" and "there is nothing" are
 different facts and must stay distinguishable at every layer. Collapsing them is how a panel ends up
-reporting "no sessions" on a host running thirty.
+reporting "no sessions" on a host running thirty. When something ACTS on the negative, give it three
+answers rather than two — `present | absent | unknown` (`TranscriptPresence` is the shape) — and let
+only the positive finding trigger the action. Ask which of the two mistakes is recoverable: cold
+restore wrongly resuming a dead session id costs an error line, while wrongly dropping a live one
+opens a blank conversation over work the user believed was continuing.
 
 **Degrade to nothing, never to something wrong.** A probe that fails means the bare, safe command —
 never a substituted nearest match. A hand-editable value that is unrecognised must yield the safe

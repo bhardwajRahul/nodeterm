@@ -2465,6 +2465,18 @@ export interface ChatTranscriptResult {
   found: boolean
 }
 
+/**
+ * Three answers to "is there a transcript for this session id?", because two are not enough.
+ *
+ * `absent` is a POSITIVE finding — we read the place it would be and it is not there. `unknown`
+ * is "we could not look": an unreadable root, a downed ControlMaster, a surface with no reader,
+ * an id we would not put on a command line anyway. The only consumer that acts on a negative is
+ * cold restore (it launches the agent bare instead of resuming a dead id), and for it the two
+ * must never collapse: dropping a resume on `unknown` would throw away a live conversation
+ * because an ssh call blipped.
+ */
+export type TranscriptPresence = 'present' | 'absent' | 'unknown'
+
 export interface ChatApi {
   /**
    * Reads an agent session transcript as structured chat messages.
@@ -2484,6 +2496,23 @@ export interface ChatApi {
     nodeId?: string,
     agentId?: string
   ): Promise<ChatTranscriptResult>
+
+  /**
+   * Is the transcript this session id names still on disk?
+   *
+   * Resolved STRICTLY by `sessionId` — no cwd fallback, which would answer `present` from another
+   * session's newest file. `nodeId` lets an SSH-project node be asked on its HOST. Never rejects:
+   * anything it cannot judge is `unknown`.
+   *
+   * Claude-shaped transcripts only (`readsClaudeTranscript` is the caller-side gate) — every other
+   * agent's id misses this resolver by construction, and reporting that as `absent` would drop a
+   * perfectly good resume.
+   */
+  transcriptExists(
+    sessionId: string,
+    accountId?: string,
+    nodeId?: string
+  ): Promise<TranscriptPresence>
 }
 
 /** Optional SSH context for account ops. When `projectId` names a connected SSH project, the

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { IconClose } from '../../icons'
-import type { ClaudeAccount } from '@shared/types'
+import type { ClaudeAccount, ClaudeSkillShareResult } from '@shared/types'
 import type { CodexAccount } from '@shared/codex-account'
 import { E_UNSUPPORTED } from '@shared/rpc'
 import { sshHostKey } from '@shared/ssh'
@@ -23,6 +23,7 @@ import {
 } from '../../../lib/codexMachineGroups'
 import { configDirLabel, unlinkedConfigDirs } from '../../../lib/accountChip'
 import { presentAccount } from '../../../lib/accountPresentation'
+import { skillShareNote } from '../../../lib/skillSharing'
 import { codexAccountSelectable } from '../../../canvas/codex-account-switch'
 import { AccountIdentityPills } from '../../AccountIdentityPills'
 import { ConfirmDialog } from '../../ConfirmDialog'
@@ -30,6 +31,7 @@ import { SettingsSection } from '../SettingsSection'
 import { SearchableRow } from '../SearchableRow'
 import { Button } from '@renderer/ui/Button'
 import { Input } from '@renderer/ui/Input'
+import { Switch } from '@renderer/ui/Switch'
 import { cn } from '@renderer/ui/cn'
 import { thisMachine, thisMachineCap } from '../../../lib/machineName'
 
@@ -188,6 +190,61 @@ function AccountColorSwatches({
   )
 }
 
+/**
+ * The per-account "Share ~/.claude/skills with this account" switch (issue #643).
+ *
+ * A managed account's config dir REPLACES `~/.claude/skills` rather than adding to it — that is
+ * Claude Code's own `join(CLAUDE_CONFIG_DIR, 'skills')` — so a fresh account shows only the skills
+ * nodeterm installed. The isolation is often the point, which is why this is off by default; this
+ * is the way back in.
+ *
+ * The copy says **edits flow both ways** because they do: each system skill is LINKED, not copied,
+ * so editing one from inside this account edits the machine's copy. A user who reads "share" as
+ * "copy" would find that out by losing work.
+ *
+ * The switch is DISABLED (never hidden) for a remote account, with the reason — a silently missing
+ * control teaches nothing, and an SSH account's skills live on its host, which v1 does not reach.
+ */
+function SkillSharingRow({
+  account,
+  onChange
+}: {
+  account: ClaudeAccount
+  /** Resolves to the line to show under the switch, or null for "nothing worth saying". */
+  onChange: (enabled: boolean) => Promise<string | null>
+}): React.JSX.Element {
+  const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState<string | null>(null)
+  const remote = !!account.host
+  const on = !!account.shareSystemSkills
+  return (
+    <div className="pt-1">
+      <div className="flex items-center gap-2">
+        <Switch
+          checked={on}
+          disabled={remote || busy}
+          ariaLabel={`Share system skills with ${account.label || account.id}`}
+          onChange={(v) => {
+            setBusy(true)
+            setNote(null)
+            void onChange(v)
+              .then(setNote)
+              .catch((e: unknown) => setNote(errorText(e, 'Could not update skill sharing.')))
+              .finally(() => setBusy(false))
+          }}
+        />
+        <span className="text-[12px] text-muted">Share ~/.claude/skills</span>
+      </div>
+      <p className="pt-1 text-[11px] text-muted">
+        {remote
+          ? 'Not available for accounts on an SSH host — their skills live on that machine.'
+          : 'Links this machine’s skills into the account. They are shared, not copied, so an edit from either side changes the same file. Turning this off removes only the links.'}
+      </p>
+      {note ? <p className="pt-1 text-[11px] text-[color:var(--warn)]">{note}</p> : null}
+    </div>
+  )
+}
+
 /** Counts nodes bound to an account across every project's SERIALIZED nodes. The active
  *  project's live React Flow edits since the last commit aren't reflected here, so the count
  *  can be slightly stale for the active canvas — acceptable for a confirmation warning. */
@@ -249,6 +306,29 @@ export function AccountsSection({ isActive }: { isActive: boolean }): React.JSX.
 
   const setColor = (id: string, color?: string): void =>
     applyAccounts((accs) => accs.map((a) => (a.id === id ? { ...a, color } : a)))
+
+  /**
+   * Flip `~/.claude/skills` sharing for one account (issue #643). The FILESYSTEM is reconciled
+   * first and the flag is persisted only if that call came back — because the flag is what the
+   * launch sweep replays, and a stored `true` whose links were never made would make the switch
+   * lie until the next boot. A REFUSAL is likewise not a state to store: nothing happened, so the
+   * switch stays where it was and the note says why.
+   */
+  const setSkillSharing = async (id: string, enabled: boolean): Promise<string | null> => {
+    let res: ClaudeSkillShareResult
+    try {
+      res = await window.nodeTerminal.claudeAccounts.setSkillSharing(id, enabled)
+    } catch (e) {
+      if (isUnsupported(e)) return 'Sharing skills is not available on this connection.'
+      throw e
+    }
+    if (!res.refused) {
+      applyAccounts((accs) =>
+        accs.map((a) => (a.id === id ? { ...a, shareSystemSkills: enabled } : a))
+      )
+    }
+    return skillShareNote(res, enabled)
+  }
 
   // The open project whose SSH host matches a remote account (needed for the ssh context of
   // waitLogin / remove). Undefined for local accounts, or when no such project is open.
@@ -750,6 +830,10 @@ export function AccountsSection({ isActive }: { isActive: boolean }): React.JSX.
                     label={account.label}
                     color={account.color}
                     onPick={(c) => setColor(account.id, c)}
+                  />
+                  <SkillSharingRow
+                    account={account}
+                    onChange={(v) => setSkillSharing(account.id, v)}
                   />
                 </div>
                 <div className="flex shrink-0 items-center gap-2">

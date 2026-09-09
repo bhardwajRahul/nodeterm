@@ -27,6 +27,7 @@ import {
   type ClaudeCliCaps,
   type GrokApi,
   type GrokCliCaps,
+  type ClaudeSkillShareResult,
   type CodexApi,
   type CodexIdentityCaps,
   UNKNOWN_CODEX_IDENTITY_CAPS,
@@ -946,7 +947,15 @@ export function buildClaudeAccountsApi(client: RpcClient): Pick<NodeTerminalApi,
           id: string
           configDir: string
           email: string | null
-        }>
+        }>,
+      // Real, not a stub: the whole implementation is core, so the machine the browser is served
+      // FROM is exactly the machine whose `~/.claude/skills` the option shares (issue #643).
+      setSkillSharing: (id, enabled) =>
+        client.request(
+          IPC.claudeAccountsSetSkillSharing,
+          id,
+          enabled
+        ) as Promise<ClaudeSkillShareResult>
     }
   }
 }

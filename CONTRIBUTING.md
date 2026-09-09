@@ -209,6 +209,20 @@ Put the rule in one predicate under `src/shared` and have every mint site ask it
 things that follow from it (a node's color, say) from that same call rather than re-deriving the
 condition per caller.
 
+**A feature that creates links owes an ownership rule, and it must be a property of the plan.**
+"Share `~/.claude/skills` with this account" (issue #643) links each system skill into a managed
+account's own `skills/` and removes those links again when switched off — one wrong removal deletes
+somebody's real skills folder. Three habits made it safe and they generalize: link the LEAVES, not
+the containing directory (nodeterm writes its own canvas skill into `<configDir>/skills/`, so a
+directory-level link would have written it into the user's system folder); decide ownership by an
+anchored SHAPE (a symlink at `<name>` pointing at `<system>/<name>`) so what the on-switch creates
+is exactly what the off-switch removes, and a real directory can never qualify; and compare
+REALPATHS before acting, because the hand-made version of the same feature makes the two directories
+one and linking into it would plant links in the folder you are about to clean up. Verify the
+removal against a real filesystem with real symlinks and real content — a mocked `fs` agrees with
+whatever the code believed. And a launch-time sweep may re-create, never delete: ownership inferred
+from shape cannot tell your link from an identical one the user made by hand.
+
 **Do not take scrolling away from tmux.** It owns the mouse, the scrollback and the alternate
 screen. A previous design moved that into the emulator and failed structurally; `CLAUDE.md` explains
 why in detail.

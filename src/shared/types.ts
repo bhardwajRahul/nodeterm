@@ -1204,6 +1204,16 @@ export interface ClaudeAccount {
    * (settings.json), so it is re-validated at every point of use (absolute, normalized).
    */
   configDir?: string
+  /**
+   * Share the machine's system skills (`~/.claude/skills`) with this account (issue #643).
+   * OFF/absent = the isolation Claude Code's own `join(CLAUDE_CONFIG_DIR, 'skills')` gives, which
+   * is the default and often the point. ON = each system skill is LINKED into the account's own
+   * `skills/` individually — the account's directory stays real, nodeterm's own skills keep their
+   * names, and turning it off removes only the links (`core/claude-skill-share.ts`).
+   * Reconciled at launch and whenever the switch is flipped; LOCAL accounts only — a remote (SSH)
+   * account's skills live on its host and are out of scope for v1.
+   */
+  shareSystemSkills?: boolean
   createdAt: number
 }
 
@@ -2510,6 +2520,31 @@ export interface ClaudeAccountsApi {
    * in yet), and installs the managed status hook into it. Local only — no SSH ctx.
    */
   link(configDir: string): Promise<{ id: string; configDir: string; email: string | null }>
+  /**
+   * Turn `~/.claude/skills` sharing on or off for one LOCAL account (issue #643) and reconcile the
+   * filesystem now. Idempotent in both directions; the renderer owns the settings flag and calls
+   * this for the effect. Never throws — the result reports what happened, including `refused`
+   * (the account's `skills/` resolves to the system one) and `failed` (an EPERM, a vanished skill).
+   */
+  setSkillSharing(id: string, enabled: boolean): Promise<ClaudeSkillShareResult>
+}
+
+/** What one `setSkillSharing` / launch reconcile did. Counts, never an exception. */
+export interface ClaudeSkillShareResult {
+  linked: number
+  unlinked: number
+  /** Links of ours present after the call — what the Settings row reports. */
+  shared: number
+  /** System skills not shared because the account has its own entry by that name. */
+  occupied: number
+  failed: number
+  /**
+   * Why nothing was done. `same-directory`: the account's `skills/` resolves to the system one
+   * (a hand-made whole-directory link, or a linked account pointed at `~/.claude`) — linking into
+   * it would plant links in the user's own folder and let the off-switch delete them from there.
+   * `remote-account`: an SSH account, whose skills live on its host (out of scope for v1).
+   */
+  refused?: 'same-directory' | 'remote-account'
 }
 
 /**

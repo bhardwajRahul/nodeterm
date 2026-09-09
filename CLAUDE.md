@@ -634,6 +634,24 @@ Lifecycle, by intent:
   The refusal is **only** in `spawnNew` — a co-attach JOIN to a live session for that node id is
   still correct. An offline node reports itself to `SshReconnector`, so the canvas heals itself;
   `retryNow` (banner Reconnect / node Reconnect) skips the backoff and clears the refuse window.
+- **A shared Codex daemon restart is NOT a terminal-session restart.** tmux survives, and the Codex
+  rollout/thread survives, but every `codex --remote unix://` TUI attached to that account's one
+  app-server socket exits together. `buildCodexLauncherScript` therefore stays in the pane as a
+  bounded transport supervisor after binding a thread instead of `exec`ing the remote TUI. On an
+  abnormal client exit it resumes that exact thread only when `app-server daemon version` no longer
+  reports `status: running` or the known control-socket inode changed; the same healthy generation
+  returns the original status so a deterministic CLI error cannot relaunch forever. A reconnect
+  never replays the launch prompt/options (that would duplicate the user's turn), and three rapid
+  resets stop with a manual `codex resume <thread>` receipt. Preflight probes live protocol health
+  before lifecycle start: Codex's PID ownership record can go stale while the shared process remains
+  responsive, and killing that "orphan" would fan one bookkeeping failure out across every node.
+  The generated-shell tests run the replaced-socket, missing-daemon, healthy-client-error, and
+  responsive-orphan cases under real `/bin/sh`; the healthy-error case is the mutation guard.
+  **Both shells wire this spine.** Electron and Server Edition arm the same signed record secret,
+  thread start/bind handlers, capability refresh, and UI identity events; the server composition is
+  isolated in `server/codex-shared-identity.ts` and behavior-tested. The old Server Edition
+  "deliberate plain Codex" answer bypassed the launcher entirely, so a reconnect implementation in
+  the launcher could be perfectly green while every headless pane still fell back to its shell.
 - **"Restart agent (resume)"** → deliberately NOT a session lifecycle event: `terminal/
   agent-restart.ts` restarts the agent CLI *inside* the pane and leaves the PTY, the tmux session
   and its scrollback untouched. It exists for **new-model pickup** — a freshly released model only
@@ -1533,13 +1551,18 @@ else, and its context links must keep classifying across restarts).
     builder), because the failure is silent and one-sided: a remote shim carrying the prelude keeps
     working, and the only symptom is this machine's userData layout sitting in a file on someone
     else's server. **The prelude is shared; the RECORD it reads is desktop-only.** Those writers are
-    the two hook-server handlers `src/main/index.ts` registers, and
-    `src/server/handlers/index.ts` deliberately registers neither — so on the Server Edition the
-    file is byte-identical, the signing secret is armed, and the resolver still finds nothing and
-    takes its fallback. Coherent rather than missing: that shell answers `shared: false`
-    (`UNKNOWN_CODEX_IDENTITY_CAPS`), so its Codex nodes run their own app-server and no tool shell
-    needs recovering. It turns into a real gap only when that edition grows the shared app-server,
-    and the fix is the two registrations.
+    the two hook-server handlers `src/main/index.ts` registers — and, since the daemon-reset work,
+    the ones `wireServerCodexSharedIdentity` (`src/server/codex-shared-identity.ts`) registers at
+    Server Edition boot as well. That shell used to answer a flat `shared: false`
+    (`UNKNOWN_CODEX_IDENTITY_CAPS`) as a DELIBERATE degrade: its Codex nodes ran their own
+    app-server, so no tool shell needed recovering. It no longer does. The Server Edition has the
+    same local app-server, the same signed node tokens and the same persistent canvas store, so it
+    wires the shared-thread spine **after** those secrets exist and its panes get the same
+    supervisor. The registration is deliberately late for that reason, and `registerCodexIdentityIpc()`
+    now answers from the live resolver instead of a constant — an early browser caller waits for the
+    refresh rather than being pinned to a false "plain Codex" answer for the whole app run. What
+    remains desktop-only is the record's REMOTE leg (SSH shims carry no record root or prelude, the
+    paragraph above).
   - **That prelude EXPORTS WHAT THE RECORD SAYS — it never decides.** `NODETERM_AGENT_ID` and
     `NODETERM_CANVAS_CONTROL` were once constants there (`codex`, granted); both are
     `buildPtyEnv`'s answers about the PANE, which labels a node with its OWN agent id

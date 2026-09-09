@@ -106,7 +106,12 @@ import {
   validCellSize,
   type Vec2
 } from '../lib/glyphGridNode'
-import { deliverCommand, KILL_LINE, type DeliveryIo } from '../terminal/command-delivery'
+import { cleanEcho, deliverCommand, KILL_LINE, type DeliveryIo } from '../terminal/command-delivery'
+import {
+  RESUME_MISS_WINDOW_MS,
+  detectsResumeMiss,
+  resumeSessionMissing
+} from '../terminal/resume-fallback'
 import { MAX_LAUNCH_LINE_BYTES, lineBytes } from '@shared/canonical-line'
 import {
   agentHibernateFns,
@@ -3449,7 +3454,82 @@ export function TerminalNode({
             // the exact line it launched with. Empty on browser/relay by design.
             agentEnvSnapshot()
           )
+          /**
+           * Watch the pane for the CLI's own "that conversation does not exist" line and, if it
+           * comes, launch the agent FRESH in the same pane.
+           *
+           * Everything it does is a refusal until proven otherwise:
+           *  - it only reads output for `RESUME_MISS_WINDOW_MS`, because the CLI answers at once;
+           *  - it matches the message against THIS id, not a bare substring;
+           *  - it re-reads the pane and requires a SHELL to own it before writing, the same gate
+           *    the hibernation wake uses — the CLI exits after printing, so anything else in that
+           *    pane is something we must not type into;
+           *  - it fires at most once, and the fallback command carries NO session id, so it can
+           *    never arm a second watcher.
+           * The dead id is forgotten on both sides afterwards (the live one from hooks and the
+           * minted one on the node), so the next cold restore does not replay it.
+           */
+          const watchResumeMiss = (deadId: string): void => {
+            let fired = false
+            let seen = ''
+            // `unsub` is assigned on the line after the timer is armed, and `stop` is pushed to
+            // `cleanups` where an unmount can call it at any moment — a `const` read before its
+            // assignment would throw out of a teardown path. Optional call, idempotent.
+            let unsub: (() => void) | undefined
+            const stop = (): void => {
+              clearTimeout(timer)
+              unsub?.()
+              unsub = undefined
+            }
+            const timer = setTimeout(() => stop(), RESUME_MISS_WINDOW_MS)
+            unsub = transport.onData(sid, (chunk) => {
+              if (fired) return
+              // Escape sequences and line breaks removed: the CLI colours its own output and tmux
+              // re-wraps it at the pane width, so a raw match would miss a line that straddles a
+              // column boundary. Bounded, so a chatty pane cannot grow this without limit.
+              seen = (seen + cleanEcho(chunk)).slice(-4096)
+              if (!resumeSessionMissing(agentId, deadId, seen)) return
+              fired = true
+              stop()
+              void (async () => {
+                const pane = await queryPaneWithin(
+                  () => api.pty.paneCommand(id),
+                  RESTART_EXIT_TIMEOUT_MS
+                )
+                // `null` is "we could not see the pane", never "nothing is running in it" — the
+                // same contract every other reader of this query keeps.
+                if (!isShellCommand(pane)) return
+                const { command: fresh } = assembleResumeCommand(
+                  {
+                    agentId,
+                    customAgent,
+                    sessionId: undefined,
+                    permissionMode: mode,
+                    model: data.agentModel,
+                    sharedIdentity: shared,
+                    launchCmdOverride: agentLaunchOverride(agentId, ownerProjectId)
+                  },
+                  agentEnvSnapshot()
+                )
+                if (!fresh) return
+                useAgentStatus.getState().setSessionId(id, undefined)
+                if (data.agentSessionId) updateNodeData(id, { agentSessionId: undefined })
+                writeWhenShellReady(fresh)
+              })()
+            })
+            cleanups.push(stop)
+          }
           if (cmd) writeWhenShellReady(cmd) // same shell-startup race as initialCommand
+          // A resume can name a conversation that does not exist — the minted id whose launch
+          // never ran (an armed `--after` node, a truncated launch line), or a hook-fed id whose
+          // transcript is gone. The CLI then prints one line, exits, and the node keeps its agent
+          // badge over a pane sitting at a bare shell (issue #707). Watch for the CLI's own
+          // refusal, naming THIS id, and start the agent fresh instead. Armed only when we
+          // actually asked to resume something and only for an agent whose message we measured;
+          // everything else is byte-identical to before. See terminal/resume-fallback.ts.
+          if (cmd && priorId && detectsResumeMiss(agentId)) {
+            watchResumeMiss(priorId)
+          }
         } else if (fresh && pausedNow) {
           // The auto-resume above was skipped (that's the feature), but this mount's PANE is
           // brand new either way — tmux respawned it, whether from the deep "pause & end session"

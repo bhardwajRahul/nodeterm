@@ -107,6 +107,7 @@ import {
   type Vec2
 } from '../lib/glyphGridNode'
 import { deliverCommand, KILL_LINE, type DeliveryIo } from '../terminal/command-delivery'
+import { MAX_LAUNCH_LINE_BYTES, lineBytes } from '@shared/canonical-line'
 import {
   agentHibernateFns,
   exitSequence,
@@ -820,6 +821,16 @@ interface CoState {
    * respawn clears it.
    */
   staleCwd: boolean
+  /**
+   * A one-shot launch command was REFUSED at delivery because it is longer than a canonical-mode
+   * tty line (`deliverCommand`'s `line-too-long`, issue #706). Holds the command's byte length,
+   * for the banner; `null` = nothing refused.
+   *
+   * NOT an overlay like `spawnError`: the terminal is alive and the user can run the command
+   * themselves — covering it would take away the only surface that can still be used. Same slim
+   * top banner as `staleCwd`, and for the same reason.
+   */
+  launchTooLongBytes: number | null
 }
 const NO_CO: CoState = {
   letterbox: false,
@@ -827,7 +838,8 @@ const NO_CO: CoState = {
   ended: false,
   offline: false,
   spawnError: null,
-  staleCwd: false
+  staleCwd: false,
+  launchTooLongBytes: null
 }
 const coStates = new Map<string, CoState>()
 const coSubs = new Map<string, (s: CoState) => void>()
@@ -1035,7 +1047,8 @@ function setCo(key: string, patch: Partial<CoState>): void {
     next.ended === prev.ended &&
     next.offline === prev.offline &&
     next.spawnError === prev.spawnError &&
-    next.staleCwd === prev.staleCwd
+    next.staleCwd === prev.staleCwd &&
+    next.launchTooLongBytes === prev.launchTooLongBytes
   )
     return
   coStates.set(key, next)
@@ -1859,6 +1872,7 @@ export function TerminalNode({
     }))
   }
   const dismissStaleCwd = (): void => setCo(termKey, { staleCwd: false })
+  const dismissLaunchTooLong = (): void => setCo(termKey, { launchTooLongBytes: null })
 
   // "Not connected" (CoState.offline): the host was unreachable, so this node has no session
   // anywhere. Ask the coordinator to re-establish the project's master NOW — it flushes the
@@ -3277,7 +3291,15 @@ export function TerminalNode({
                   write: (d) => transport.write(sid, d),
                   onData: (cb) => transport.onData(sid, cb)
                 },
-                cmd
+                cmd,
+                (outcome) => {
+                  // The one outcome the caller must act on: the line was longer than the pane's
+                  // tty could take, so nothing was submitted (#706). Say so — a refusal that is
+                  // only visible as an idle pane is the failure this replaces.
+                  if (outcome === 'line-too-long') {
+                    setCo(termKey, { launchTooLongBytes: lineBytes(cmd) })
+                  }
+                }
               )
             )
           })
@@ -5387,6 +5409,27 @@ export function TerminalNode({
             <button
               className="term-node__stalecwd-dismiss"
               onClick={dismissStaleCwd}
+              title="Dismiss"
+              aria-label="Dismiss"
+            >
+              ×
+            </button>
+          </div>
+        )}
+        {/* Launch line refused (#706): same slim TOP banner as staleCwd, for the same reason —
+            the terminal is alive and the command can still be run by hand, so nothing is
+            covered. It reports what was measured and names the flag that avoids it; it does not
+            offer a retry, because retyping the identical line would be truncated identically. */}
+        {!co.closed && !co.ended && !co.spawnError && !co.offline && co.launchTooLongBytes !== null && !offscreenDown && (
+          <div className="term-node__stalecwd nodrag">
+            <span className="term-node__stalecwd-text">
+              This session&apos;s launch command ({co.launchTooLongBytes} bytes) is longer than a
+              terminal line can carry ({MAX_LAUNCH_LINE_BYTES}), so it was not run. Shorten the
+              prompt, or pass it with --prompt-file.
+            </span>
+            <button
+              className="term-node__stalecwd-dismiss"
+              onClick={dismissLaunchTooLong}
               title="Dismiss"
               aria-label="Dismiss"
             >

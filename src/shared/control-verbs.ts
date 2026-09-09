@@ -2,7 +2,7 @@
 // set. Read the second half of that sentence literally — see WHAT THIS SET DOES NOT DO below.
 //
 // IN `src/shared` BECAUSE IT HAS TWO SIDES, and that is the whole point of this file existing.
-// The set was defined in `src/main/canvas-control-core.ts` and the gate it describes lives in the
+// The set was defined in `src/core/canvas-control-core.ts` and the gate it describes lives in the
 // renderer (`Canvas.tsx`'s `switch (verb)`), which cannot import from `src/main` — `tsconfig.web`
 // includes only `src/renderer`, `src/shared` and the preload types. So the set stayed a
 // security-shaped constant imported by nothing but its own unit test, while
@@ -52,4 +52,47 @@ export const DESTRUCTIVE_VERBS: ReadonlySet<string> = new Set(['write', 'close',
  */
 export function isDestructiveVerb(verb: string): boolean {
   return DESTRUCTIVE_VERBS.has(verb)
+}
+
+/**
+ * Verbs that honour `--dry-run` (issue #532): validate the call — the SAME validation a real call
+ * runs, ids resolved against the live canvas — and report what would happen, changing nothing.
+ *
+ * Deliberately only the SPAWN verbs. The asymmetry the issue names is that these are easy to call
+ * and expensive to undo (a mis-spawned team is N nodes to clean up by hand; a bad `--after` id
+ * arms a station against nothing); `list`/`board` are already reads, and the mutating verbs
+ * outside this set are either cheap to reverse (`rename`, `assign`) or human-confirmed
+ * (`write`/`close`). A verb OUTSIDE this set must REFUSE `--dry-run`, never silently perform —
+ * a `close --dry-run` that closes is strictly worse than no flag at all. That refusal is decided
+ * in MAIN's control handler (src/main/index.ts, setControlHandler's first gate), which every
+ * control dispatch passes through, `browser` and `open-project` included.
+ *
+ * Same `string` typing rationale as DESTRUCTIVE_VERBS above: both sides read this set, and the
+ * renderer's dispatch receives a raw `verb: string` off IPC.
+ */
+export const DRY_RUN_VERBS: ReadonlySet<string> = new Set([
+  'open-terminal',
+  'open-claude',
+  'open-agent',
+  'spawn-team',
+  'open-worktree'
+])
+
+/**
+ * Did the caller ask for a dry run? Presence-based, because the sh shim translates a valueless
+ * `--dry-run` to `arg.dry-run=` (empty string) — so `''` MUST read as on. The explicit
+ * off-values exist for the `--dry-run=false` a caller writes to be safe; anything else present
+ * is on (guessing "off" for an unrecognized value would run the real mutation under a flag that
+ * asked it not to — the unsafe direction).
+ */
+export function dryRunRequested(args: Record<string, string | undefined>): boolean {
+  const v = args['dry-run']
+  if (v === undefined) return false
+  return !/^(false|no|0)$/i.test(v.trim())
+}
+
+/** The refusal for `--dry-run` on a verb outside DRY_RUN_VERBS — derived from the set so the
+ *  sentence can never name a verb the gate does not honour. */
+export function dryRunRefusal(verb: string): string {
+  return `--dry-run is not supported for ${verb} — it applies to: ${[...DRY_RUN_VERBS].join(', ')}. Nothing was done.`
 }

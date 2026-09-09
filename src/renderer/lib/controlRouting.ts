@@ -129,15 +129,101 @@ export function needsLiveCanvas(verb: string): boolean {
 }
 
 /**
+ * Verbs that CREATE a session and can therefore be answered by writing into the owning project's
+ * SERIALIZED nodes instead of activating its tab.
+ *
+ * The relationship to `STORE_ANSWERED_VERBS` is the whole point, and the two sets are disjoint
+ * (pinned in `controlRouting.test.ts`):
+ *
+ *   - `STORE_ANSWERED_VERBS` — "no canvas is needed at either end". `list` reads names, `send`/
+ *     `reply` deliver into a tmux PANE, `sticky` rewrites a note, `open-project` acts on the
+ *     projects store. `needsLiveCanvas` is false for them and they never route at all.
+ *   - `COLD_OPENABLE_VERBS` — "a canvas IS needed, but the serialized one will do". The node these
+ *     verbs create is INERT until its project is next shown: the launch command moves into
+ *     `pendingLaunch` (`armForColdOpen`), the node is upserted through `applyNodeMutation`, and the
+ *     project's own mount path spawns the PTY and fires the armed launch. `needsLiveCanvas` stays
+ *     TRUE for them — they do need a canvas — which is exactly why this is a second, narrower set
+ *     rather than four more entries in the first one.
+ *
+ * WHY (the bug): routing is by SOURCE, so `open-claude` from an agent in a project the user is not
+ * looking at travelled the user's view to that project — the camera jumped, the tab switched and
+ * the target project's saved viewport was applied, all on a background agent's say-so. That is the
+ * same G5 hijack `send`/`reply`/`sticky` are declared here to avoid; the difference is only that an
+ * open needs somewhere to put the node, and a project's serialized nodes are somewhere.
+ *
+ * Deliberately NOT here: every verb that acts on nodes that already exist (`write`, `close`,
+ * `group`, `move`, `arrange`, `align`, `verify`, `spawn-team`, `open-worktree`). They read live
+ * canvas state — measured node sizes, worktree staleness, the React Flow edge arrays — that the
+ * serialized copy does not carry, so they keep travelling. The verbs that create a node with no
+ * session behind it are the third set below.
+ */
+const COLD_OPENABLE_VERBS: ReadonlySet<string> = new Set([
+  'open-terminal',
+  'open-claude',
+  'open-agent'
+])
+
+export function canColdOpen(verb: string): boolean {
+  return COLD_OPENABLE_VERBS.has(verb)
+}
+
+/**
+ * Verbs that create a DISPLAY node — one with no session behind it — and can therefore run against
+ * the owning project's serialized nodes without that canvas being on screen.
+ *
+ * The third set, and the reason it is not folded into `COLD_OPENABLE_VERBS`: a cold open has a
+ * launch to defer, so it moves the composed command into `pendingLaunch` and tells the caller the
+ * session is QUEUED. These four have nothing to defer. A web page, a video, an image and a browser
+ * node are inert wherever they sit; writing one into a project's serialized nodes is the whole
+ * effect, and it is complete the moment `writeDisk` returns. One set with two contracts inside it
+ * is how a caller ends up told a picture is queued.
+ *
+ * WHY they were still travelling after the cold-open fix: an agent that renders its output as a
+ * node — a report as `show-web`, a screenshot as `show-image` — is the commonest reason a
+ * background session touches the canvas at all, and every one of those calls yanked the human out
+ * of the project they were typing in. Same G5 objection, same answer as the two sets above.
+ *
+ * Deliberately NOT here: `browser`, which NAVIGATES an existing node and needs a mounted
+ * `<webview>` guest to do it. `open-browser` merely places the node; the guest is created when
+ * that project is next shown, exactly as a cold-opened terminal's PTY is.
+ *
+ * None of the four takes `--group`, which is why this set owes no worktree question. A verb
+ * joining it that does would: `cwdForNewNodeIn` subtracts the worktree store's `staleGroupIds`,
+ * which is epoch-scoped to the ACTIVE project, so off canvas that subtraction cannot be made.
+ */
+const OFF_CANVAS_VERBS: ReadonlySet<string> = new Set([
+  'show-image',
+  'show-video',
+  'show-web',
+  'open-browser'
+])
+
+export function answersOffCanvas(verb: string): boolean {
+  return OFF_CANVAS_VERBS.has(verb)
+}
+
+/** Test-only view of the three sets, so their disjointness can be asserted rather than eyeballed. */
+export function controlVerbSetsForTests(): {
+  storeAnswered: string[]
+  coldOpenable: string[]
+  offCanvas: string[]
+} {
+  return {
+    storeAnswered: [...STORE_ANSWERED_VERBS],
+    coldOpenable: [...COLD_OPENABLE_VERBS],
+    offCanvas: [...OFF_CANVAS_VERBS]
+  }
+}
+
+/**
  * The capability half of the guard: may a session in this node drive the canvas?
  *
- * The empty/absent default MIRRORS pty-manager's spawn-time default (`options.agentId ?? 'claude'`):
- * a plain terminal node received the claude hook env at spawn, so a manual `claude` there holds
- * NODETERM_CANVAS_CONTROL — rejecting it here would contradict the env it was handed.
+ * Plain terminals are not agent nodes. Treating missing identity as Claude made a bare shell look
+ * control-capable and let recovery code relabel it as an agent. A hand-launched CLI is still
+ * observable through its runtime hooks, but the serialized node does not gain agent authority.
  */
 export function sourceIsControlCapable(agentId: unknown): boolean {
-  const id = typeof agentId === 'string' && agentId ? agentId : 'claude'
-  return canControlCanvas(id as AgentId)
+  return typeof agentId === 'string' && agentId.length > 0 && canControlCanvas(agentId as AgentId)
 }
 
 /**

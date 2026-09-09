@@ -21,7 +21,7 @@ import {
   deliverFromControl,
   messagingEnabledVia,
   type AgentMessagingDeps
-} from './agent-messaging'
+} from '../core/agents/agent-messaging'
 import type { CapabilityAckMap } from '../core/project-capability-consent'
 import { resetMessageFlow } from '../core/agents/agent-message-flow'
 import {
@@ -60,7 +60,7 @@ function baseDeps(
       argv: ['claude'],
       pids: [200]
     }),
-    sendFramedPayload: async (nodeId, payload) => {
+    sendEnvelope: async (nodeId, payload) => {
       sent.push({ nodeId, payload })
       return true
     },

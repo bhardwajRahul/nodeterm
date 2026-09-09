@@ -1066,6 +1066,106 @@ describe('ssh lineage safety', () => {
   })
 })
 
+// Field bug (enes, 2026-09-01): on an SSH project with heavy canvas-control churn (rev 19468 on the
+// live file), the "Reload from disk / Keep mine" conflict bar kept appearing with nobody else
+// editing. The reconciler recognized its own mirror writes only by REV — it had no analogue of the
+// local watcher's `isSelfWrite` byte comparison — and `refreshSshProject` (the 15 s poll + the
+// connect-time refresh) ran OFF the save chain, so a poll holding a pre-save entry snapshot could
+// read the server file AFTER the save's mirror write landed: remote.rev > (stale) cacheRev, the
+// store's own bytes were "adopted" and broadcast as an external change, and a dirty canvas raised
+// the conflict bar over a file nobody else touched.
+describe('ssh reconcile self-write recognition (the spurious conflict bar)', () => {
+  const sshConn = { server: { host: 'h', user: 'u' } as any, remoteCwd: '~/app' }
+  const node = (id: string, title: string) => ({
+    id, kind: 'terminal' as const, position: { x: 0, y: 0 }, size: { width: 1, height: 1 },
+    title, color: '#fff', group: null
+  })
+
+  it('a poll interleaved with a save never adopts that save\'s own mirror write', async () => {
+    const remote: Record<string, string> = {}
+    const gate: { open: (() => void) | null } = { open: null }
+    let holdNextRead = false
+    const io = {
+      read: async (_id: string, ssh: any) => {
+        if (holdNextRead) {
+          // The poll's ssh `cat` in flight on a slow WAN link.
+          holdNextRead = false
+          await new Promise<void>((resolve) => { gate.open = resolve })
+        }
+        return remote[ssh.remoteCwd] != null
+          ? { status: 'ok' as const, content: remote[ssh.remoteCwd] }
+          : { status: 'absent' as const }
+      },
+      write: async (_id: string, ssh: any, c: string) => ((remote[ssh.remoteCwd] = c), true)
+    }
+    const store = new WorkspaceStore(io)
+    const p1 = project({ id: 'ps', ssh: sshConn, cwd: undefined, nodes: [node('term-1', 't')] })
+    await store.save(ws([p1])) // seed: cache rev 1, mirrored
+
+    // The 15 s poll fires; its read hangs mid-flight…
+    holdNextRead = true
+    const poll = store.refreshSshProject('ps', { pushIfStanding: false })
+    await vi.waitFor(() => { if (!gate.open && holdNextRead) throw new Error('poll read not reached') })
+    // …while an ordinary autosave (canvas-control created a node) lands and mirrors rev 2.
+    const p2 = { ...p1, nodes: [...p1.nodes, node('term-2', 'spawned')] }
+    const save2 = store.save(ws([p2]))
+    // Give an un-serialized save time to run to completion (under the fix it queues instead).
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    gate.open?.()
+    await save2
+    // The poll saw either the pre-save file (rev 1 == its snapshot) or the save's own write —
+    // neither is an external change, so nothing may be adopted / broadcast toward the conflict bar.
+    await expect(poll).resolves.toBeNull()
+    expect(JSON.parse(remote['~/app']).rev).toBe(2) // the save's mirror still landed
+  })
+
+  it('an older own mirror write read back inside the throttle window does not resurrect a deleted node', async () => {
+    // Simulates the real remote IO's 5 s trailing throttle: the write is acked optimistically
+    // while the server still holds the PREVIOUS bytes.
+    const remote: Record<string, string> = {}
+    let throttleHold = false
+    const io = {
+      read: async (_id: string, ssh: any) =>
+        remote[ssh.remoteCwd] != null
+          ? { status: 'ok' as const, content: remote[ssh.remoteCwd] }
+          : { status: 'absent' as const },
+      write: async (_id: string, ssh: any, c: string) => {
+        if (!throttleHold) remote[ssh.remoteCwd] = c
+        return true // optimistic ack either way — the trailing write "will" land
+      }
+    }
+    const store = new WorkspaceStore(io)
+    const both = [node('term-1', 't'), node('term-x', 'closed later')]
+    await store.save(ws([project({ id: 'ps', ssh: sshConn, cwd: undefined, nodes: both })])) // rev 1 on the server
+    throttleHold = true // next mirror write is acked but not yet on the wire
+    await store.save(ws([project({ id: 'ps', ssh: sshConn, cwd: undefined, nodes: [node('term-1', 't')] })])) // user closed term-x
+    // The poll reads the server before the trailing write fires: it sees OUR OWN rev-1 bytes,
+    // which still contain term-x. That is a self-write echo, not a foreign append — rescuing
+    // term-x here would resurrect the node the user just deliberately closed.
+    await expect(store.refreshSshProject('ps', { pushIfStanding: false })).resolves.toBeNull()
+  })
+
+  it('a genuinely external edit is still adopted — self-write recognition matches exact bytes only', async () => {
+    const remote: Record<string, string> = {}
+    const io = {
+      read: async (_id: string, ssh: any) =>
+        remote[ssh.remoteCwd] != null
+          ? { status: 'ok' as const, content: remote[ssh.remoteCwd] }
+          : { status: 'absent' as const },
+      write: async (_id: string, ssh: any, c: string) => ((remote[ssh.remoteCwd] = c), true)
+    }
+    const store = new WorkspaceStore(io)
+    await store.save(ws([project({ id: 'ps', ssh: sshConn, cwd: undefined, nodes: [node('term-1', 't')] })]))
+    // Another machine edits the file we last mirrored: content derived from ours, but not ours.
+    const f = JSON.parse(remote['~/app'])
+    f.rev = 5
+    f.name = 'renamed-elsewhere'
+    remote['~/app'] = JSON.stringify(f)
+    const adopted = await store.refreshSshProject('ps', { pushIfStanding: false })
+    expect(adopted).toMatchObject({ id: 'ps', name: 'renamed-elsewhere' })
+  })
+})
+
 // Field bug (2026-08-10): two projects + rapid tab switching → both canvases wiped. Every switch
 // fires an un-awaited full save; save() was unserialized and writeAtomic used one fixed tmp path,
 // so overlapping saves spliced each other's tmp bytes (corrupt JSON published by rename) and a slow
@@ -1823,7 +1923,7 @@ describe('the shared project file carries content, not machine identity', () => 
 })
 
 describe('projectMetaFor (issue #338 PR 1) — target exists / is SSH, from the store alone', () => {
-  // The --project targeting gate (src/main/project-grants.ts) learns "does this project exist,
+  // The --project targeting gate (src/core/project-grants.ts) learns "does this project exist,
   // and is it SSH" from main's OWN store — never from anything the caller sent. Same three
   // entry kinds as persistedCanvases: inline (e.project), ssh (e.ssh), local ref (e.cwd).
   it('answers for all three entry kinds and undefined for an unknown id', async () => {
@@ -1853,4 +1953,130 @@ describe('projectMetaFor (issue #338 PR 1) — target exists / is SSH, from the 
     await store.save(ws([project({ id: 'p-a', cwd: projRoot })]))
     expect(store.projectMetaFor('p-b')).toBeUndefined()
   })
+})
+
+// Field bug (enes, 2026-09-06, SSH project on a SLOW link): 16 terminals deleted, and all 16 came
+// straight back with "16 new sessions registered from another device (your phone, or another
+// machine)". No phone and no second machine were involved — the only other writer was OUR OWN
+// stale server file.
+//
+// The chain: a save records the nodes it dropped in `clearedNodes`, which is the ONLY thing that
+// tells the mirror's re-read "we deleted this, do not rescue it". `mirrorSshCache` used to drop
+// that record the moment the write was ACKED — but the real remote IO acks the 5 s throttle's
+// TRAILING write optimistically, before it is on the wire. When that trailing write is later
+// dropped, `markUnmirrored` re-owes the mirror but could not restore the tombstones, so the next
+// mirror write re-read a server file that still listed all 16 nodes, had nothing left to filter
+// with, and "rescued" every one of them back onto the canvas.
+describe('ssh mirror: an optimistically-acked write that never lands must not resurrect deletions', () => {
+  const sshConn = { server: { host: 'h', user: 'u' } as any, remoteCwd: '~/app' }
+  const node = (id: string, title: string) => ({
+    id, kind: 'terminal' as const, position: { x: 0, y: 0 }, size: { width: 1, height: 1 },
+    title, color: '#fff', group: null
+  })
+
+  /** The real remote IO's throttle, modelled exactly: while `hold` is on the write returns TRUE
+   *  (the optimistic ack for a trailing run) but the server content does not change. */
+  const throttleIO = () => {
+    const files: Record<string, string> = {}
+    const state = { hold: false }
+    const io = {
+      read: async (_id: string, ssh: any) =>
+        files[ssh.remoteCwd] != null
+          ? { status: 'ok' as const, content: files[ssh.remoteCwd] }
+          : { status: 'absent' as const },
+      write: async (_id: string, ssh: any, c: string) => {
+        if (!state.hold) files[ssh.remoteCwd] = c
+        return true // acked either way — "the trailing write will land"
+      }
+    }
+    return { files, state, io }
+  }
+
+  const idsOn = (files: Record<string, string>): string[] =>
+    JSON.parse(files['~/app']).nodes.map((n: any) => n.id)
+
+  it('keeps deletions dead across a dropped trailing write — while a genuine phone append is still rescued', async () => {
+    const { files, state, io } = throttleIO()
+    const store = new WorkspaceStore(io)
+    const p = (nodes: ReturnType<typeof node>[]) =>
+      ws([project({ id: 'ps', ssh: sshConn, cwd: undefined, nodes })])
+
+    const keep = node('term-keep', 'kept')
+    const a = node('term-a', 'closed by the user')
+    const b = node('term-b', 'closed by the user')
+    await store.save(p([keep, a, b])) // rev 1, mirrored: the server holds all three
+    expect(idsOn(files).sort()).toEqual(['term-a', 'term-b', 'term-keep'])
+
+    // The phone appends a session it just started, straight into the server file (its own SSH path).
+    const phone = node('term-phone-1', 'Mobile')
+    const f = JSON.parse(files['~/app'])
+    files['~/app'] = JSON.stringify({ ...f, rev: f.rev + 1, nodes: [...f.nodes, phone] })
+
+    // The user closes term-a and term-b. The mirror write is ACKED (throttle) but never lands.
+    state.hold = true
+    fake.sent.length = 0
+    await store.save(p([keep]))
+    // The phone's node IS foreign — it must be rescued and announced, fix or no fix.
+    const rescueMsg = fake.sent.find((m) => m.channel === 'workspace:external-change')
+    expect((rescueMsg!.args[0] as Project).nodes.map((n) => n.id)).toContain('term-phone-1')
+    expect((rescueMsg!.args[0] as Project).nodes.map((n) => n.id)).not.toContain('term-a')
+
+    // …and the connection dies inside the throttle window, so the trailing write is dropped.
+    store.markUnmirrored('ps')
+
+    // The next save retries the owed mirror. Its re-read still sees term-a/term-b on the server.
+    state.hold = false
+    fake.sent.length = 0
+    await store.save(p([keep, phone])) // the renderer adopted the phone node above
+
+    expect(idsOn(files).sort()).toEqual(['term-keep', 'term-phone-1']) // the deletions travelled
+    const resurrected = fake.sent
+      .filter((m) => m.channel === 'workspace:external-change')
+      .flatMap((m) => (m.args[0] as Project).nodes.map((n) => n.id))
+    expect(resurrected).not.toContain('term-a')
+    expect(resurrected).not.toContain('term-b')
+  })
+
+  // When the tombstones are GARBAGE-COLLECTED: on the first READ that shows the server no longer
+  // lists the id — positive confirmation, taken from a read the store already makes (the mirror's
+  // re-read, the 15 s poll, the connect-time refresh), so it costs no extra round-trip. It
+  // therefore lags the landed write by one read, which is the price of not trusting the ack: a
+  // tombstone that outlives its usefulness by a few seconds only suppresses a rescue of a node we
+  // deliberately deleted. After the confirmation the id is an ordinary unknown one again — if it
+  // comes back on the server it is a genuine foreign addition (another machine restored it, a git
+  // checkout) and is rescued like any other.
+  // BOTH reading sites confirm, and each is covered: the mirror write's own re-read (which runs on
+  // every changed save, so it is the usual one) and `reconcileSsh` (the 15 s poll / connect-time
+  // refresh). Wiring only one of them leaves the other's tombstones alive for the whole run.
+  const confirmingReads: [string, (store: WorkspaceStore, save: () => Promise<unknown>) => Promise<unknown>][] = [
+    ["the mirror write's own re-read", (_store, save) => save()],
+    ['the 15 s poll', (store) => store.refreshSshProject('ps', { pushIfStanding: false })]
+  ]
+  for (const [label, confirm] of confirmingReads) {
+    it(`drops a tombstone once ${label} shows the deletion travelled, so a later re-appearance is rescued again`, async () => {
+      const { files, io } = throttleIO()
+      const store = new WorkspaceStore(io)
+      const p = (nodes: ReturnType<typeof node>[]) =>
+        ws([project({ id: 'ps', ssh: sshConn, cwd: undefined, nodes })])
+      const keep = node('term-keep', 'kept')
+      const a = node('term-a', 'closed by the user')
+
+      await store.save(p([keep, a]))
+      await store.save(p([keep])) // the deletion lands: the server no longer lists term-a
+      expect(idsOn(files)).toEqual(['term-keep'])
+
+      // …and something reads the server back, seeing term-a gone: our deletion HAS travelled.
+      await confirm(store, () => store.save(p([keep, node('term-confirm', 'an ordinary edit')])))
+
+      // Only NOW does another machine put a node with that id back into the server file.
+      const f = JSON.parse(files['~/app'])
+      files['~/app'] = JSON.stringify({ ...f, rev: f.rev + 1, nodes: [...f.nodes, node('term-a', 'restored')] })
+      fake.sent.length = 0
+      await store.save(p([keep, node('term-2', 'new here')])) // an ordinary local edit mirrors
+
+      expect(idsOn(files)).toContain('term-a') // rescued: the tombstone was already retired
+      const msg = fake.sent.find((m) => m.channel === 'workspace:external-change')
+      expect((msg!.args[0] as Project).nodes.map((n) => n.id)).toContain('term-a')
+    })
+  }
 })

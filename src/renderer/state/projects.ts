@@ -4,18 +4,24 @@ import type {
   BridgeLink,
   CanvasMutation,
   CanvasNodeState,
+  ClosedSessionEntry,
   NavStop,
   Project,
   ProjectKanban,
   Viewport,
   Workspace
 } from '@shared/types'
+import { CLOSED_SESSIONS_CAP } from '@shared/types'
 import { collisionSeed, derivedProjectId } from '@shared/project-id'
 import type { ProjectCapability } from '@shared/project-capabilities'
 import type { ProjectIcon } from '@shared/project-icon'
 import { recordCapabilityAck, type CapabilityAnswer } from '@shared/project-capability-consent'
 import { applyCanvasMutation, createProject, reorderGroupWithinParent } from './workspace'
 import { markWorkspaceDirty } from './workspaceDirty'
+import { folderName } from '../lib/projectOpen'
+// One order-independent key for an edge's endpoints — the SAME rule `hiddenLinkIds` uses, so a
+// rope and the bridge it covers are recognized as one relationship here too.
+import { pairKey as bridgePairKey } from '../lib/noteLink'
 
 interface ProjectsState {
   projects: Project[]
@@ -104,6 +110,15 @@ interface ProjectsState {
     ropes?: BridgeLink[]
   ): void
   /**
+   * Appends context bridges / control ropes to a project that is loaded but NOT active — the edge
+   * counterpart of `applyNodeMutation`, and for the same reason: React Flow holds only the active
+   * project's edges, so a cold open (canvas control's `open-*` answered out of the store) has
+   * nowhere else to put the opener's rope and the fan-in bridge it owes. Deduped by edge id AND by
+   * endpoint pair, since `planBridges` mints `bridge-<source>-<target>` while a rope is
+   * `ctrl-<source>-<target>` — two ids, one relationship each. No-op for an unknown project.
+   */
+  appendCanvasLinks(projectId: string, links: { bridges?: BridgeLink[]; ropes?: BridgeLink[] }): void
+  /**
    * Applies ONE peer canvas mutation to a project's serialized nodes — the path for a project
    * that is loaded but NOT active (React Flow only holds the active project's nodes). Returns
    * false if the project is unknown here (nothing applied, nothing created).
@@ -144,6 +159,15 @@ interface ProjectsState {
   closeProject(id: string): string
   /** Restores a closed project and makes it active. No-op if the id is unknown. */
   reopenProject(id: string): void
+
+  /** Records freshly deleted sessions into the project's history (newest-first, capped at
+   *  `CLOSED_SESSIONS_CAP`). No-op if `entries` is empty or the project no longer exists. */
+  recordClosedSessions(projectId: string, entries: ClosedSessionEntry[]): void
+  /** Removes and returns the matching closed-session entry, or `undefined` if it's already gone
+   *  (e.g. discarded from another surface first). */
+  consumeClosedSession(projectId: string, entryId: string): ClosedSessionEntry | undefined
+  /** Removes a closed-session entry without reopening it. */
+  discardClosedSession(projectId: string, entryId: string): void
 
   /**
    * Registers (or finds) the project for a local directory WITHOUT activating it — the store half
@@ -298,7 +322,7 @@ export const useProjects = create<ProjectsState>((set, get) => ({
       get().reopenProject(existing.id)
       return existing
     }
-    const name = folder.split('/').filter(Boolean).pop() || 'Project'
+    const name = folderName(folder) || 'Project'
     const project = get().addProject(name, folder)
     set({ activeProjectId: project.id })
     return project
@@ -446,6 +470,30 @@ export const useProjects = create<ProjectsState>((set, get) => ({
     }))
   },
 
+  appendCanvasLinks(projectId, links) {
+    const add = (existing: BridgeLink[] | undefined, incoming: BridgeLink[] | undefined) => {
+      if (!incoming?.length) return existing
+      const kept = existing ?? []
+      const seenId = new Set(kept.map((e) => e.id))
+      const seenPair = new Set(kept.map((e) => bridgePairKey(e.source, e.target)))
+      const fresh = incoming.filter((e) => {
+        const pair = bridgePairKey(e.source, e.target)
+        if (seenId.has(e.id) || seenPair.has(pair)) return false
+        seenId.add(e.id)
+        seenPair.add(pair)
+        return true
+      })
+      return fresh.length ? [...kept, ...fresh] : existing
+    }
+    set((s) => ({
+      projects: s.projects.map((p) =>
+        p.id === projectId
+          ? { ...p, bridges: add(p.bridges, links.bridges), ropes: add(p.ropes, links.ropes) }
+          : p
+      )
+    }))
+  },
+
   applyNodeMutation(projectId, mutation) {
     if (!get().projects.some((p) => p.id === projectId)) return false
     set((s) => ({
@@ -575,7 +623,7 @@ export const useProjects = create<ProjectsState>((set, get) => ({
   closeProject(id) {
     const { projects, activeProjectId } = get()
     const index = projects.findIndex((p) => p.id === id)
-    const next = projects.map((p) => (p.id === id ? { ...p, closed: true } : p))
+    const next = projects.map((p) => (p.id === id ? { ...p, closed: true, closedAt: Date.now() } : p))
     let nextActive = activeProjectId
     if (activeProjectId === id) {
       // Move focus to the nearest still-open project (search outward), or the welcome screen.
@@ -587,6 +635,47 @@ export const useProjects = create<ProjectsState>((set, get) => ({
     }
     set({ projects: next, activeProjectId: nextActive })
     return nextActive
+  },
+
+  recordClosedSessions(projectId, entries) {
+    if (!entries.length) return
+    set((s) => ({
+      projects: s.projects.map((p) =>
+        p.id !== projectId
+          ? p
+          : {
+              ...p,
+              closedSessions: [...entries, ...(p.closedSessions ?? [])].slice(
+                0,
+                CLOSED_SESSIONS_CAP
+              )
+            }
+      )
+    }))
+  },
+
+  consumeClosedSession(projectId, entryId) {
+    let found: ClosedSessionEntry | undefined
+    set((s) => ({
+      projects: s.projects.map((p) => {
+        if (p.id !== projectId || !p.closedSessions) return p
+        const idx = p.closedSessions.findIndex((e) => e.id === entryId)
+        if (idx === -1) return p
+        found = p.closedSessions[idx]
+        return { ...p, closedSessions: p.closedSessions.filter((e) => e.id !== entryId) }
+      })
+    }))
+    return found
+  },
+
+  discardClosedSession(projectId, entryId) {
+    set((s) => ({
+      projects: s.projects.map((p) =>
+        p.id !== projectId || !p.closedSessions
+          ? p
+          : { ...p, closedSessions: p.closedSessions.filter((e) => e.id !== entryId) }
+      )
+    }))
   },
 
   reopenProject(id) {
@@ -633,7 +722,7 @@ export const useProjects = create<ProjectsState>((set, get) => ({
       set((s) => ({ projects: [...s.projects, adopted] }))
       return { project: adopted, created: false, adopted: true }
     }
-    const fallbackName = cwd.split('/').filter(Boolean).pop() || 'Project'
+    const fallbackName = folderName(cwd) || 'Project'
     const project = {
       ...createProject(get().projects.length, name ?? fallbackName, cwd),
       ...(color ? { color } : {})

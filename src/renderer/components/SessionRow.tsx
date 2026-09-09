@@ -1,5 +1,7 @@
 import { useState } from 'react'
+import { AccountChip, useAccountChip } from './AccountChip'
 import { IconBellFilled, IconCircleCheck } from './icons'
+import { NodeIconView } from './NodeIcon'
 import { ProjectGlyph } from './ProjectGlyph'
 import type { SessionRowVM } from '../lib/sessionList'
 import { useContextWindow } from '../state/contextWindow'
@@ -44,6 +46,9 @@ export function SessionRow({
   const naming = useSessionNaming((s) => !!s.byId[row.id])
   const usage = useContextWindow((s) => (row.sessionId ? s.bySessionId[row.sessionId] : undefined))
   const percentMode = useSettings((s) => s.settings.usagePercentMode)
+  // The sidebar is one more view of the same nodes, so it gets the canvas header's account chip
+  // under the same visibility rule — two rows on two Claude logins are otherwise indistinguishable.
+  const accountChip = useAccountChip(row.accountId, row.account)
 
   const commit = (): void => {
     const t = draft.trim()
@@ -63,6 +68,16 @@ export function SessionRow({
       draggable={!editing}
       onClick={onClick}
       onContextMenu={onContextMenu}
+      onMouseDown={(e) => {
+        // Middle-click closes the session, same as the × button — but goes through
+        // onClose's confirm dialog rather than skipping it (killing a real tmux
+        // session isn't the same low-stakes action as closing a browser tab).
+        if (e.button === 1) {
+          e.preventDefault()
+          e.stopPropagation()
+          onClose()
+        }
+      }}
       onDragStart={(e) => {
         e.dataTransfer.effectAllowed = 'move'
         // Some browsers require data to be set for a drag to start.
@@ -88,6 +103,11 @@ export function SessionRow({
       )}
       <div className="ss-row__body">
         <div className="ss-row__titleline">
+          {/* Ahead of the project monogram: the icon identifies the SESSION, and a row that is
+              already carrying a status dot, a monogram and a context pill needs its most specific
+              mark first. `projectId` is passed because status mode flattens rows across projects,
+              so the active project is not necessarily this row's. */}
+          <NodeIconView icon={row.icon} size={13} className="ss-row__icon" projectId={row.projectId} />
           {row.projectColor ? (
             // Status mode: rows are flattened across projects, so each row shows its project's
             // icon (or, absent one, the monogram — colored circle with the project initial)
@@ -129,6 +149,7 @@ export function SessionRow({
             </span>
           )}
           {row.session && <span className="ss-chip">{row.session}</span>}
+          <AccountChip chip={accountChip} />
           {row.loop && (
             <span className="ss-loop">
               {row.loop.kind} · {row.loop.count}
@@ -153,7 +174,7 @@ export function SessionRow({
           </button>
           <button
             className="ss-row__close"
-            title="Close session"
+            title="End session"
             onClick={(e) => {
               e.stopPropagation()
               onClose()

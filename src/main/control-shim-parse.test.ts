@@ -14,7 +14,7 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { CONTROL_SHIM_SCRIPT } from './canvas-control-core'
+import { CONTROL_SHIM_SCRIPT } from '../core/canvas-control-core'
 
 let dir = ''
 
@@ -82,6 +82,23 @@ describe('the control shim translates flags', () => {
     expect(run(['rename', '--node', 'n1', '--title='])).toEqual(['arg.node=n1', 'arg.title='])
   })
 
+  // `--dry-run` is valueless and usually mid-line (issue #532): the peek must leave the next
+  // `--flag` alone and translate it to an explicit empty `arg.dry-run=`.
+  it('--dry-run rides as a valueless flag anywhere on the line', () => {
+    expect(run(['spawn-team', '--dry-run', '--team', '[]'])).toEqual([
+      'arg.dry-run=',
+      'arg.team=[]'
+    ])
+  })
+
+  // Hyphenated flag names ride through as-is — the loop strips only the leading `--`, so
+  // `--prompt-file` lands as `arg.prompt-file` and the server reads args['prompt-file'].
+  it('a hyphenated flag name (--prompt-file) keeps its hyphen in the arg key', () => {
+    expect(run(['open-claude', '--prompt-file', '/tmp/brief.md'])).toEqual([
+      'arg.prompt-file=/tmp/brief.md'
+    ])
+  })
+
   // The peek tests for `--`, not for `-`: a single-dash token is a VALUE. `--scroll -600` must
   // keep working, or the fix trades one silent misparse for another.
   it('a negative number is still consumed as a value', () => {
@@ -107,6 +124,10 @@ describe('the control shim translates flags', () => {
   // subtle part of this script and a reordering would mean the drain went wrong.
   it('the bare positional forms still work', () => {
     expect(run(['write', 'n7', '--text', 'hi'])).toEqual(['arg.node=n7', 'arg.text=hi'])
+    expect(run(['color', 'n7,n8', '--color', '#32d74b'])).toEqual([
+      'arg.node=n7,n8',
+      'arg.color=#32d74b'
+    ])
   })
 
   // Task 5.4: the messaging verbs take the same "first bare word is the node" convenience —

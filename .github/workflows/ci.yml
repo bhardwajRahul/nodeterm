@@ -2,10 +2,19 @@ name: CI
 
 # Verify typecheck, tests, and the production build on every PR and push to main.
 on:
+  # Merge-queue runs: required checks must also report on the queue's synthetic
+  # merge commits, or every queued PR times out waiting for them.
+  merge_group:
   pull_request:
     branches: [main]
   push:
     branches: [main]
+
+# Only PR runs may be cancelled: a cancelled merge_group run strands every PR queued
+# behind it, and a cancelled push-to-main run loses that commit's CI signal.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -58,4 +67,4 @@ jobs:
         run: npm run host:build
 
       - name: Windows-relevant tests
-        run: npx vitest run src/core/fs-atomic.test.ts src/core/fs-atomic.guard.test.ts src/session-host/ src/core/session-host-client.test.ts src/core/session-host-launch-ledger.test.ts src/core/agent-launch.test.ts src/core/pty-session-host.test.ts src/main/media-protocol.test.ts src/main/remote-atomic-write.test.ts src/main/ssh-fs.test.ts src/main/remote-ssh/ssh-project.test.ts src/renderer/terminal/file-links.test.ts src/renderer/terminal/file-links.windows.test.ts src/renderer/terminal/file-link-dialect.test.ts src/renderer/terminal/host-platform.test.ts
+        run: npx vitest run src/core/fs-atomic.test.ts src/core/fs-atomic.guard.test.ts src/session-host/ src/core/session-host-client.test.ts src/core/session-host-launch-ledger.test.ts src/core/agent-launch.test.ts src/core/pty-session-host.test.ts src/main/bootstrap-windows.test.ts src/main/media-protocol.test.ts src/main/remote-atomic-write.test.ts src/main/ssh-fs.test.ts src/main/remote-ssh/ssh-project.test.ts src/renderer/terminal/file-links.test.ts src/renderer/terminal/file-links.windows.test.ts src/renderer/terminal/file-link-dialect.test.ts src/renderer/terminal/host-platform.test.ts

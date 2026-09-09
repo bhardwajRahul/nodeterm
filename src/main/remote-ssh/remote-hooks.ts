@@ -6,7 +6,8 @@
 // simply runs without status). Takes an INJECTED runner so the flow is unit-testable without real
 // ssh/electron.
 import { childArgs, hookForwardArgs, hookForwardCancelArgs, remoteEndpointFileContents } from '../../core/remote-ssh/control-master'
-import { CLAUDE_HOOK_EVENTS, GEMINI_HOOK_EVENTS, GROK_HOOK_EVENTS } from '@shared/agents/hook-events'
+import { CLAUDE_HOOK_EVENTS, GEMINI_HOOK_EVENTS } from '@shared/agents/hook-events'
+import { GROK_EVENTS } from '../../core/agents/hooks/grok'
 import { GROK_HOOK_FILE, isSafeRemoteGrokHome } from '../../core/agents/grok-paths'
 import { isSafeNodeId, isSafeRemoteHome } from '../../core/remote-safety'
 import { hookServer } from '../../core/agents/hook-server'
@@ -41,7 +42,7 @@ import {
   buildCanvasControlInstructions,
   buildCanvasSkillBody,
   mergeCanvasControlBlock
-} from '../canvas-control-core'
+} from '../../core/canvas-control-core'
 import {
   CONTEXT_SHIM_SCRIPT,
   buildContextLinkSkillBody,
@@ -382,7 +383,9 @@ export class RemoteHooks {
         ),
         buildManagedScript('codex', REMOTE_IDENTITY_ROOT)
       )
-      const command = buildCodexManagedCommand(script)
+      // POSIX explicitly: the platform argument is the HOST's, never this desktop's. A Windows
+      // desktop writes a `.cmd` command locally (issue #567) and must not put one on a Linux server.
+      const command = buildCodexManagedCommand(script, 'linux')
       const codexHome = `${home}/.codex`
       const hooksFile = `${codexHome}/hooks.json`
       const configToml = `${codexHome}/config.toml`
@@ -493,7 +496,7 @@ export class RemoteHooks {
       } catch {
         cfg = {}
       }
-      const merged = mergeManagedHook(cfg, buildManagedHookCommand(script), GROK_HOOK_EVENTS)
+      const merged = mergeManagedHook(cfg, buildManagedHookCommand(script), GROK_EVENTS)
       // The `$(dirname …)` is QUOTED: a valid $GROK_HOME may contain spaces, which would otherwise
       // word-split into two mkdir args, leave the directory absent, and fail the quoted `cat >`.
       await this.r.run(

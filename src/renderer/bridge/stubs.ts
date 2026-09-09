@@ -16,6 +16,7 @@
 
 import {
   UNKNOWN_CLAUDE_CLI_CAPS,
+  UNKNOWN_GROK_CLI_CAPS,
   UNKNOWN_CODEX_IDENTITY_CAPS,
   type ClaudeUsage,
   type NodeTerminalApi,
@@ -122,6 +123,11 @@ export function buildStubApi(): Omit<
   | 'onUnreadClear'
   | 'answerPermission'
   | 'ackDone'
+  | 'reportHibernated'
+  | 'onAgentWake'
+  | 'onRemoteViewers'
+  | 'onAgentRefreshNode'
+  | 'onAgentRenameNode'
   // Real over the bridge (IPC.appUserDataDir): the worktree dialog's default path is derived from
   // it, and a '' stub would propose `/worktrees/…` at the filesystem root.
   | 'userDataDir'
@@ -273,6 +279,17 @@ export function buildStubApi(): Omit<
       read: () => Promise.resolve({ ok: false, rows: [], mem: null }),
       host: () => Promise.resolve(null)
     },
+    triggers: {
+      // Superseded by the real WS-backed namespace in ws-bridge (startTriggerService registers the
+      // handlers in the server shell). On the RELAY tab this stub stays in force and REFUSES: the
+      // arm store, the scheduler and the sessions all live on the host — arming from the guest
+      // would write another machine's execution consent. The card catches the rejection and says
+      // triggers are managed on the host machine.
+      arm: U('triggers.arm'),
+      disarm: U('triggers.disarm'),
+      status: U('triggers.status'),
+      runNow: U('triggers.runNow')
+    },
     codex: {
       // Overridden by the real WS-backed namespace in ws-bridge. The stub's answer is the same
       // one the Server Edition gives on purpose (see server/handlers/index.ts): no shared
@@ -285,6 +302,14 @@ export function buildStubApi(): Omit<
       // fail-open caps (never rejects) because the permission-mode gate reads it on the boot path.
       cliCaps: () => Promise.resolve(UNKNOWN_CLAUDE_CLI_CAPS),
       readTranscript: U('claude.readTranscript')
+    },
+    grok: {
+      // Same shape and same reason as claude's above: the launch path reads this synchronously, so
+      // it must resolve rather than reject. Unprobed ⇒ no `--session-id` ⇒ today's command line.
+      cliCaps: () => Promise.resolve(UNKNOWN_GROK_CLI_CAPS),
+      // Nothing taken is the honest answer where no shell can look, and it degrades to today's
+      // behaviour: mint freely. Overridden by the real WS-backed namespace in ws-bridge.
+      takenSessionIds: () => Promise.resolve([])
     },
     agent: {
       // No env snapshot outside the desktop window: the stub (and ws-bridge, identically) answers
@@ -336,7 +361,8 @@ export function buildStubApi(): Omit<
       add: U('claudeAccounts.add'),
       waitLogin: U('claudeAccounts.waitLogin'),
       cancelWaitLogin: U('claudeAccounts.cancelWaitLogin'),
-      remove: U('claudeAccounts.remove')
+      remove: U('claudeAccounts.remove'),
+      link: U('claudeAccounts.link')
     },
     codexAccounts: {
       add: U('codexAccounts.add'),
@@ -466,6 +492,11 @@ export function buildStubApi(): Omit<
     // here (see the note beside createPtyPressureMonitor in src/server/index.ts). The fix itself
     // rejects rather than pretending, so a stray call can never look like it worked.
     onPtyPressure: noopUnsub,
+    // A browser tab has no raw input stream to classify — trackpad-vs-mouse ground truth exists
+    // only under the Electron shell (main/trackpad-gesture.ts). Never fires here; the canvas
+    // wheel router is constructed WITHOUT gesture reporting in this runtime and keeps its
+    // delta-shape heuristics, so the degrade is a kept behavior, not a silent gap.
+    onCanvasTrackpadGesture: noopUnsub,
     raisePtyDeviceLimit: async () => ({
       ok: false as const,
       error: 'Raising the terminal limit must be done on the machine running the server.'
@@ -505,6 +536,11 @@ export function buildStubApi(): Omit<
     | 'onUnreadClear'
     | 'answerPermission'
   | 'ackDone'
+  | 'reportHibernated'
+  | 'onAgentWake'
+  | 'onRemoteViewers'
+  | 'onAgentRefreshNode'
+  | 'onAgentRenameNode'
     | 'userDataDir'
     | 'presence'
     | 'speech'

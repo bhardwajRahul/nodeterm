@@ -7,13 +7,14 @@ import {
   buildCanvasSkillBody,
   CONTROL_SHIM_SCRIPT,
   CONTROL_UNREACHABLE_MSG
-} from './canvas-control-core'
+} from '../core/canvas-control-core'
 import {
   CODEX_SANDBOX_BLOCKED_LINE,
   CODEX_SANDBOX_RETRY_LINE
 } from '../core/agents/hook-sandbox-hint-sh'
 import { RETRYABLE } from '../core/agents/agent-message-decide'
-import { PROJECT_TARGETABLE_VERBS } from './project-grants'
+import { PROJECT_TARGETABLE_VERBS } from '../core/project-grants'
+import { DRY_RUN_VERBS } from '../shared/control-verbs'
 import { STRICT_CONTROL_VERBS } from '../core/agents/node-identity-policy'
 import { BROWSER_ACTION_KEYS } from '../core/browser-verb'
 import { BROWSER_RETRYABLE, BROWSER_OUTCOME_LABEL } from '../core/browser-outcomes'
@@ -160,6 +161,20 @@ describe('parseControlRequest', () => {
     expect(isDestructiveVerb('rename')).toBe(false)
   })
 
+  it('color requires --node and --color, and is metadata-only', () => {
+    expect(parseControlRequest('color', {})).toEqual({
+      error: 'color requires --node <id,id>'
+    })
+    expect(parseControlRequest('color', { node: 'n1,n2' })).toEqual({
+      error: 'color requires --color'
+    })
+    expect(parseControlRequest('color', { node: 'n1,n2', color: '#32d74b' })).toEqual({
+      verb: 'color',
+      args: { node: 'n1,n2', color: '#32d74b' }
+    })
+    expect(isDestructiveVerb('color')).toBe(false)
+  })
+
   it('ungroup requires --group; move requires --nodes; neither is destructive', () => {
     expect(parseControlRequest('ungroup', {})).toEqual({ error: 'ungroup requires --group <id>' })
     expect(parseControlRequest('ungroup', { group: 'g1' })).toEqual({ verb: 'ungroup', args: { group: 'g1' } })
@@ -207,9 +222,14 @@ describe('parseControlRequest', () => {
 
   it('instructions cover the verb set and the confirm caveat', () => {
     const body = buildCanvasControlInstructions('/tmp/nodeterm.sh')
-    for (const verb of ['list', 'open-agent', 'spawn-team', 'group', 'ungroup', 'move', 'arrange', 'rename', 'write', 'close', 'board', 'assign']) {
+    for (const verb of ['list', 'open-agent', 'spawn-team', 'group', 'ungroup', 'move', 'arrange', 'rename', 'color', 'write', 'close', 'board', 'assign']) {
       expect(body).toContain(verb)
     }
+    expect(body).toContain('group --nodes <id,id> [--label L] [--color C]')
+    expect(body).toContain('color --node <id,id> --color C')
+    const skill = buildCanvasSkillBody('/tmp/nodeterm.sh')
+    expect(skill).toContain('group --nodes <id,id> [--label "Frontend Team"] [--color C]')
+    expect(skill).toContain('color --node <id,id> --color C')
     expect(body.toLowerCase()).toContain('confirm')
   })
 
@@ -262,10 +282,10 @@ describe('parseControlRequest', () => {
     expect(parseControlRequest('reply', { node: 'n1' })).toEqual({ error: 'reply requires --text' })
   })
 
-  it('the shim maps a bare positional onto arg.node for send/reply/sticky too', () => {
+  it('the shim maps a bare positional onto arg.node for color/send/reply/sticky too', () => {
     // The positional list is a case pattern inside CONTROL_SHIM_SCRIPT; send/reply/sticky take the
-    // same "first bare word is the node" convenience write/close/rename/branch already have.
-    expect(CONTROL_SHIM_SCRIPT).toContain('write|close|rename|branch|send|reply|sticky)')
+    // same "first bare word is the node" convenience write/close/rename/color/branch already have.
+    expect(CONTROL_SHIM_SCRIPT).toContain('write|close|rename|color|branch|send|reply|sticky)')
   })
 
   it('sticky requires --node plus exactly one of --text/--append, and is not destructive', () => {
@@ -292,10 +312,126 @@ describe('parseControlRequest', () => {
     expect(isDestructiveVerb('sticky')).toBe(false)
   })
 
+  it('both agent-facing texts warn that --prompt is one line and must not start with a slash', () => {
+    for (const body of [buildCanvasSkillBody('/x/shim.sh'), buildCanvasControlInstructions('/tmp/nodeterm.sh')]) {
+      // `assembleLaunchCommand` collapses every whitespace run in the prompt, because the prompt
+      // rides argv on a line that is typed into the pane. An agent that does not know this writes
+      // a numbered brief and gets one paragraph.
+      expect(body.toLowerCase()).toContain('one line')
+      // The failure that costs a whole station: flattened, a leading slash command swallows the
+      // task as its argument, and the node then reads as idle to `--after`. Silence here is what
+      // let that ship.
+      expect(body).toMatch(/start a prompt with `\/`|begin a prompt with `\/`/i)
+    }
+  })
+
+  it('both agent-facing texts separate a denial from an unanswered dialog', () => {
+    for (const body of [buildCanvasSkillBody('/x/shim.sh'), buildCanvasControlInstructions('/tmp/nodeterm.sh')]) {
+      // The two answers carry opposite guidance — a denial is final, a timeout is retryable — and
+      // a body that names only "may be denied" leaves a caller reading its own timeout as refusal.
+      expect(body).toContain('denied by user')
+      expect(body).toContain('no answer within 120s')
+    }
+  })
+
+  it('both agent-facing texts document --model on the open verbs and per-role model on spawn-team', () => {
+    for (const body of [buildCanvasSkillBody('/x/shim.sh'), buildCanvasControlInstructions('/tmp/nodeterm.sh')]) {
+      // The flag is the only cost lever an orchestrator has: without it every station it opens
+      // inherits one default model. A body that stops naming it leaves that lever undiscoverable,
+      // which is the state this test was written to end.
+      expect(body).toContain('--model')
+      // Both silent no-ops must be stated, or an agent reads a missing flag as a failed call:
+      // a non-switch-capable agent ignores it, and an unknown id fails in-session, not at open.
+      expect(body.toLowerCase()).toContain('ignore')
+      // Per-role model is what lets ONE spawn-team call mix tiers; the JSON example must show it.
+      expect(body).toContain('"model"')
+    }
+  })
+
+  it('both agent-facing texts document --base accepting a station id (issue #530)', () => {
+    for (const body of [buildCanvasSkillBody('/x/shim.sh'), buildCanvasControlInstructions('/tmp/nodeterm.sh')]) {
+      // The flag surface must show the widened grammar…
+      expect(body).toContain('--base <ref|stationId>')
+      // …and both hard truths beside it: what a station id resolves to, and that the base is
+      // captured at CREATION (the deferred-resolution half of #530 is not built — an agent that
+      // reads this text and assumes lazy capture bases a wave on an empty branch).
+      expect(body.toLowerCase()).toContain('station')
+      expect(body).toMatch(/captured when the worktree is CREATED/i)
+    }
+  })
+
+  it('both agent-facing texts document --dry-run, derived from DRY_RUN_VERBS (issue #532)', () => {
+    for (const body of [buildCanvasSkillBody('/x/shim.sh'), buildCanvasControlInstructions('/tmp/nodeterm.sh')]) {
+      expect(body).toContain('--dry-run')
+      // The verb list is RENDERED from the set (dryRunDocLines) — walk the real set so a verb
+      // added to the gate lands in the text the day it is added, and a removed one reds here.
+      for (const v of DRY_RUN_VERBS) expect(body).toContain(v)
+      // Both hard edges must be stated, or an agent discovers them by losing a call to each:
+      // unsupported verbs refuse, and --project cannot be combined.
+      expect(body.toLowerCase()).toContain('refuses `--dry-run`')
+      expect(body).toContain('cannot be combined with `--project`')
+    }
+  })
+
+  it('both agent-facing texts document --prompt-file and the one-line --prompt fact (issue #520)', () => {
+    for (const body of [buildCanvasSkillBody('/x/shim.sh'), buildCanvasControlInstructions('/tmp/nodeterm.sh')]) {
+      // `assembleLaunchCommand` collapses every whitespace run in a --prompt literal (it rides
+      // argv on a line typed into the pane). An agent that does not know this writes a numbered
+      // brief and gets one paragraph — and the fix, --prompt-file, is useless undocumented.
+      expect(body.toUpperCase()).toContain('ONE LINE')
+      expect(body).toContain('--prompt-file')
+      // The per-role escape on spawn-team must be named too, or teams stay prose-only.
+      expect(body).toContain('promptFile')
+      // The failure that costs a whole station: flattened, a leading slash command swallows the
+      // task as its argument, and the node then reads as idle to `--after`.
+      expect(body.toLowerCase()).toMatch(/begin a prompt with `\/`|start a prompt with `\/`/)
+    }
+  })
+
+  it('both agent-facing texts say the open reply reports `queued` (issue #569 item 1)', () => {
+    for (const body of [buildCanvasSkillBody('/x/shim.sh'), buildCanvasControlInstructions('/tmp/nodeterm.sh')]) {
+      // The field itself, and the list that says WHICH ids — a caller that cannot name the queued
+      // nodes cannot act on the answer.
+      expect(body).toContain('queued')
+      expect(body).toContain('queuedIds')
+      // The consequence is the whole point of the field: an armed node has no process, so an
+      // orchestrator must not route work to it. Without this sentence the flag reads as trivia.
+      expect(body.toLowerCase()).toContain('no process')
+      // And the three ways a node ends up armed must all be named, or a caller learns the third
+      // one by reporting a --project session as started when it has not begun.
+      expect(body).toContain('--after')
+      expect(body).toContain('--project')
+      expect(body.toLowerCase()).toMatch(/setup script/)
+    }
+  })
+
+  it('both agent-facing texts say an ERRORED station does not release its dependents (#521)', () => {
+    for (const body of [buildCanvasSkillBody('/x/shim.sh'), buildCanvasControlInstructions('/tmp/nodeterm.sh')]) {
+      // The contract changed under `--after`: "gone idle" no longer releases a dependent, because
+      // a station whose turn died on an API error reaches idle IMMEDIATELY. A text still promising
+      // the old rule tells an orchestrator its chain launched on something that produced nothing.
+      expect(body.toLowerCase()).toContain('successfully')
+      expect(body).toContain('LAST TURN ERRORED')
+      // And a way out, or the orchestrator is told it is stuck without being told what to do.
+      expect(body.toLowerCase()).toMatch(/nudge|retry/)
+    }
+  })
+
   it('both agent-facing texts document the sticky verb', () => {
     for (const body of [buildCanvasSkillBody('/x/shim.sh'), buildCanvasControlInstructions('/tmp/nodeterm.sh')]) {
       expect(body).toContain('`sticky --node')
       expect(body).toContain('--create')
+    }
+  })
+
+  it('both agent-facing texts say an unchanged rename types nothing into the session', () => {
+    for (const body of [buildCanvasSkillBody('/x/shim.sh'), buildCanvasControlInstructions('/tmp/nodeterm.sh')]) {
+      // Issues #582 / #569 §2. An orchestrator that re-asserts its node's name on startup and
+      // after every context reset was previously paying a `/rename` injection into the working
+      // session each time — one reporter worked around it by reading the title first. The verb
+      // now compares, so the text has to say so, or callers keep building that workaround.
+      expect(body.toLowerCase()).toContain('already named')
+      expect(body.toLowerCase()).toContain('no-op')
     }
   })
 
@@ -320,6 +456,16 @@ describe('parseControlRequest', () => {
       expect(body.toLowerCase()).toContain('queued')
       expect(body).not.toMatch(/busy target answers `targetBusy` instead/i)
       expect(body).not.toMatch(/delivered only\s+when the target is verifiably\s+idle/i)
+    }
+  })
+
+  it('both agent-facing texts state the Server creator-ownership and inert-boot contract', () => {
+    for (const body of [buildCanvasSkillBody('/x/shim.sh'), buildCanvasControlInstructions('/tmp/nodeterm.sh')]) {
+      expect(body).toContain('ownership is fail-closed')
+      expect(body).toContain('verified node identity')
+      expect(body).toContain('current server run')
+      expect(body).toMatch(/never[\s\S]*auto-adopted[\s\S]*relaunched[\s\S]*controlled at boot/)
+      expect(body).toContain('before any partial mutation')
     }
   })
 
@@ -500,7 +646,7 @@ describe('open-project + --project docs land with the dispatch (issue #338, spec
   })
 
   it('every --project-targetable verb line documents the flag — walked off the REAL set', () => {
-    // The drift alarm walks PROJECT_TARGETABLE_VERBS (src/main/project-grants.ts) rather than a
+    // The drift alarm walks PROJECT_TARGETABLE_VERBS (src/core/project-grants.ts) rather than a
     // re-typed list: a fourth verb joining the set without its doc line goes red here, and a doc
     // line dropping the flag goes red too.
     for (const [name, body] of bodies) {
@@ -523,6 +669,18 @@ describe('open-project + --project docs land with the dispatch (issue #338, spec
     }
   })
 
+  it('tells the agent that opened nodes AND --after stations are already linked — nothing to `link`', () => {
+    for (const [name, body] of bodies) {
+      expect(body, name).toMatch(/roped to each (listed )?station/)
+      expect(body, name).toMatch(/dashed while it waits/)
+      expect(body, name).toMatch(/already\s+linked/)
+      expect(body, name).toMatch(/nothing to `link`/)
+      // Only the skill body carries the orchestration recipe, so only it has the step-5 sentence
+      // that had to stop saying an unopened station is unlinked — an `--after` station is linked.
+      if (name === 'skill') expect(body, name).toMatch(/neither opened nor named in `--after`/)
+    }
+  })
+
   it('the orchestration recipe gains the multi-repo pattern', () => {
     for (const [name, body] of bodies) {
       expect(body, name).toContain('one project per repository')
@@ -539,7 +697,7 @@ describe('the --project clause tells the truth about travel (review #363 I-1 + M
     ['instructions', buildCanvasControlInstructions('/x/shim.sh')]
   ]
 
-  it('no-travel is promised ONLY for a returned id; own id is documented as flag-omitted (travel included)', () => {
+  it('no open switches the view — the own-id "travel included" claim is GONE from both bodies', () => {
     for (const [name, body] of bodies) {
       // The clause slice: from the `--project` flag doc to the open-project entry that follows
       // it in both bodies — anchored, so a caveat cannot drift into another paragraph (the
@@ -549,22 +707,57 @@ describe('the --project clause tells the truth about travel (review #363 I-1 + M
       expect(start, `${name}: clause start`).toBeGreaterThan(-1)
       expect(end, `${name}: clause before the open-project entry`).toBeGreaterThan(start)
       const clause = body.slice(start, end)
-      // Own id ≡ the flag omitted, view switch included — the REAL behavior (Canvas.tsx's
-      // own-id leg falls through to the legacy path, travel included; pinned in
-      // control-open-project.source.test.ts). The doc must say the same, not more.
+      // Own id ≡ the flag omitted — still true, and still the whole of what that leg promises.
       expect(clause, name).toMatch(/behaves exactly as if the flag\s+were omitted/)
-      expect(clause, name).toMatch(/view switch\s+included/)
-      // The no-travel promise exists only attached to the RETURNED id…
-      expect(clause, name).toMatch(
-        /returned to YOU\s+in this session, which never switches the\s+user'?s view/
-      )
-      // …and the old universal phrasing ("without switching the user's view", said of the whole
-      // flag) is gone from the body entirely.
+      // THE STALE CLAIM. Passing your own id (or omitting the flag) used to switch the user's
+      // view to your project; it no longer does — an open whose own project is not on screen is
+      // written COLD into it (lib/coldOpen, `canColdOpen`). A body still promising a view switch
+      // describes a product that no longer exists, and an orchestrator reading it would expect
+      // the user to be looking at what it opened.
+      expect(body, name).not.toMatch(/view switch\s+included/)
+      expect(body, name).not.toMatch(/a normal open, view switch/)
+      // The old universal phrasing ("without switching the user's view", said of the whole flag)
+      // stays gone too — the promise now belongs to EVERY open, stated in its own sentence.
       expect(body, name).not.toMatch(/without switching/)
       // M-3: the do-not-poll caveat and the refusal rule live in the clause ITSELF — dropping
       // them here while the recipe's copy survives is red.
       expect(clause, name).toMatch(/do not poll/)
       expect(clause, name).toContain('any other id is refused')
+    }
+  })
+
+  it('both bodies document the OWN-project cold open: never switches the view, queued, closed case', () => {
+    // The behaviour change this test exists for. All four facts an orchestrator acts on:
+    // (1) an open never moves the user, (2) a node opened into a project they are not viewing
+    // starts when they next view it, (3) the reply says so via `queued`, (4) a CLOSED project is
+    // still written into and the tab is NOT reopened.
+    for (const [name, body] of bodies) {
+      expect(body, `${name}: never switches the view`).toMatch(
+        /open NEVER switches the user'?s view|OPEN NEVER SWITCHES THE USER'?S VIEW/i
+      )
+      expect(body, `${name}: cold`).toMatch(/cold/i)
+      expect(body, `${name}: queued`).toContain('queued')
+      expect(body, `${name}: closed project`).toMatch(/closed/i)
+      expect(body, `${name}: tab not reopened`).toMatch(/not reopened/i)
+    }
+  })
+
+  it('both bodies say the DISPLAY verbs do not switch the view either — and are never queued', () => {
+    // The second half of the same promise, and the half an agent meets most often: a skill that
+    // renders its report as HTML reaches for `show-web` every time it finishes. Two facts it acts
+    // on, and the second is why these are not folded into the cold-open sentence: the node is
+    // COMPLETE when placed, so a caller told "queued" would wait for something that has already
+    // happened. The `offCanvas` field is what it reads instead.
+    for (const [name, body] of bodies) {
+      const start = body.indexOf('`show-image')
+      const end = body.indexOf('`group --nodes', start)
+      expect(start, `${name}: the display-verb entries`).toBeGreaterThan(-1)
+      expect(end, `${name}: the group entry after them`).toBeGreaterThan(start)
+      const clause = body.slice(start, end)
+      expect(clause, `${name}: never switches the view`).toMatch(/never switch(es)? the user'?s view/i)
+      expect(clause, `${name}: names the field`).toContain('offCanvas')
+      // THE STALE CLAIM the split exists to prevent: a display verb reported as queued.
+      expect(clause, `${name}: not queued`).toMatch(/nothing (here )?is (ever )?\`?queued/i)
     }
   })
 })

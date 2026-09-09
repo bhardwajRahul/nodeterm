@@ -8,12 +8,21 @@ import { Select } from '@renderer/ui/Select'
 import { SegmentedPill } from '@renderer/ui/SegmentedPill'
 import { Input } from '@renderer/ui/Input'
 import { hintLabel } from '@shared/platform-utils'
+import { clampWheelZoomSpeed } from '@renderer/canvas/wheel-zoom'
 import { DEFAULT_WORKTREE_PATH_TEMPLATE } from '@shared/worktree'
 
 const ROWS = {
   defaultView: {
     title: 'Default view',
     keywords: ['default', 'view', 'kanban', 'board', 'canvas', 'project']
+  },
+  omniKanban: {
+    title: 'Omni Kanban (global swimlanes)',
+    keywords: ['omni', 'kanban', 'swimlane', 'global', 'overview', 'board', 'project']
+  },
+  omniKanbanDefault: {
+    title: 'Omni as default for Cmd+Shift+B',
+    keywords: ['omni', 'kanban', 'global', 'default', 'shortcut', 'cmd', 'shift', 'b']
   },
   gridSize: { title: 'Grid size', keywords: ['grid', 'size', 'snap'] },
   nodeSize: {
@@ -27,6 +36,14 @@ const ROWS = {
   },
   panHover: { title: 'Pan-hover delay (ms)', keywords: ['pan', 'hover', 'delay', 'focus', 'guard'] },
   doubleClick: { title: 'Double-click to focus', keywords: ['double', 'click', 'focus'] },
+  focusZoom: {
+    title: 'Zoom when going to a node',
+    keywords: ['zoom', 'focus', 'go to', 'node', 'jump', 'camera', 'session', 'sidebar']
+  },
+  mdPreview: {
+    title: 'Open Markdown in preview',
+    keywords: ['markdown', 'md', 'preview', 'render', 'editor', 'docs', 'readme', 'file']
+  },
   sidebarCollapse: {
     title: 'Sidebar: collapse inactive by default',
     keywords: ['sidebar', 'sessions', 'collapse', 'expand', 'project', 'switch', 'group', 'tree']
@@ -40,6 +57,10 @@ const ROWS = {
     keywords: ['worktree', 'git', 'path', 'folder', 'repo', 'branch', 'template']
   },
   wheelZoom: { title: 'Scroll wheel zooms', keywords: ['zoom', 'wheel', 'scroll', 'mouse', 'pan'] },
+  wheelZoomSpeed: {
+    title: 'Wheel zoom speed',
+    keywords: ['zoom', 'wheel', 'speed', 'sensitivity', 'step', 'jump', 'mouse', 'scroll']
+  },
   trackpadPan: {
     title: 'Trackpad scroll pans',
     keywords: ['trackpad', 'pan', 'scroll', 'zoom', 'magic', 'mouse', 'two-finger', 'macos']
@@ -81,6 +102,32 @@ export function BehaviorSection({ isActive }: { isActive: boolean }): React.JSX.
               <option value="canvas">Canvas</option>
               <option value="kanban">Kanban board</option>
             </Select>
+          }
+        />
+      </SearchableRow>
+      <SearchableRow {...ROWS.omniKanban}>
+        <FieldRow
+          label="Omni Kanban (global swimlanes)"
+          description="When enabled, the global Kanban overview is available via its dedicated shortcut (Settings → Keyboard Shortcuts → Toggle global kanban). Default OFF — existing users see no change."
+          control={
+            <Switch
+              checked={settings.omniKanbanEnabled === true}
+              onChange={(v) => update({ omniKanbanEnabled: v })}
+              ariaLabel="Omni Kanban"
+            />
+          }
+        />
+      </SearchableRow>
+      <SearchableRow {...ROWS.omniKanbanDefault}>
+        <FieldRow
+          label="Make Omni the default for Cmd+Shift+B"
+          description="When enabled, Cmd+Shift+B opens the global overview instead of the per-project board. The dedicated global shortcut always opens Omni regardless. Opt-in, per user."
+          control={
+            <Switch
+              checked={settings.omniKanbanAsDefault === true}
+              onChange={(v) => update({ omniKanbanAsDefault: v })}
+              ariaLabel="Omni as default"
+            />
           }
         />
       </SearchableRow>
@@ -173,6 +220,32 @@ export function BehaviorSection({ isActive }: { isActive: boolean }): React.JSX.
           }
         />
       </SearchableRow>
+      <SearchableRow {...ROWS.focusZoom}>
+        <FieldRow
+          label="Zoom when going to a node"
+          description="Off: going to a node keeps your current zoom and only pans to it."
+          control={
+            <Switch
+              checked={settings.focusZoomToNode}
+              onChange={(v) => update({ focusZoomToNode: v })}
+              ariaLabel="Zoom when going to a node"
+            />
+          }
+        />
+      </SearchableRow>
+      <SearchableRow {...ROWS.mdPreview}>
+        <FieldRow
+          label="Open Markdown in preview"
+          description="Markdown files open rendered instead of as editable text. The node's Preview/Edit toggle still switches either way."
+          control={
+            <Switch
+              checked={settings.openMarkdownPreview}
+              onChange={(v) => update({ openMarkdownPreview: v })}
+              ariaLabel="Open Markdown in preview"
+            />
+          }
+        />
+      </SearchableRow>
       <SearchableRow {...ROWS.sidebarCollapse}>
         <FieldRow
           label="Sidebar: collapse inactive by default"
@@ -233,11 +306,42 @@ export function BehaviorSection({ isActive }: { isActive: boolean }): React.JSX.
           }
         />
       </SearchableRow>
+      <div
+        className={
+          'mt-3 space-y-3 border-l border-border pl-4' +
+          (settings.wheelZoom ? '' : ' pointer-events-none opacity-40')
+        }
+        aria-disabled={!settings.wheelZoom}
+      >
+        <SearchableRow {...ROWS.wheelZoomSpeed}>
+          <FieldRow
+            label="Wheel zoom speed"
+            description="How far one wheel click zooms. Turn it down if a single click jumps too far (common on high-resolution wheels like the MX Master)."
+            control={
+              <div className="flex items-center gap-3">
+                <input
+                  type="range"
+                  min={0.2}
+                  max={2}
+                  step={0.1}
+                  value={clampWheelZoomSpeed(settings.wheelZoomSpeed)}
+                  aria-label="Wheel zoom speed"
+                  onChange={(e) => update({ wheelZoomSpeed: Number(e.target.value) })}
+                  className="w-40 accent-[var(--accent)]"
+                />
+                <span className="w-12 text-right text-[12px] text-muted tabular-nums">
+                  {clampWheelZoomSpeed(settings.wheelZoomSpeed).toFixed(1)}×
+                </span>
+              </div>
+            }
+          />
+        </SearchableRow>
+      </div>
       <SearchableRow {...ROWS.trackpadPan}>
         <FieldRow
           label="Trackpad scroll pans"
           description={hintLabel(
-            'macOS: a two-finger trackpad scroll pans the canvas even with wheel zoom on. Turn off if a precise-pixel mouse (Magic Mouse, MX) pans when you meant to zoom.'
+            'macOS: a two-finger trackpad scroll pans the canvas even with wheel zoom on. The desktop app tells mouse and trackpad apart directly, so a wheel mouse still zooms; in the browser (Server Edition) detection is heuristic — turn off there if a precise-pixel mouse (Magic Mouse, MX) pans when you meant to zoom.'
           )}
           control={
             <Switch

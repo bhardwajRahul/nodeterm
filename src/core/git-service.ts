@@ -11,6 +11,8 @@ import type { WorktreeListResult } from '../shared/worktree'
 import type { GitHistoryOptions, GitHistoryResult } from '../shared/git-history'
 import { resolveGitRemote, runRemoteGit } from './remote-ssh/remote-git'
 import { platform } from './platform'
+import { ghPath } from './gh-path'
+import { gitEnv } from './git-env'
 import {
   isValidCloneUrl,
   expandCloneUrl,
@@ -21,29 +23,11 @@ import {
 
 const run = promisify(execFile)
 
-function findBin(names: string[]): string | null {
-  for (const c of names) {
-    try {
-      if (fs.existsSync(c)) return c
-    } catch {
-      // ignore
-    }
-  }
-  return null
-}
-
-const GH_PATH = findBin(['/opt/homebrew/bin/gh', '/usr/local/bin/gh', '/usr/bin/gh'])
-
-// GUI apps on macOS don't inherit the shell PATH, so a git credential helper installed by
-// Homebrew (e.g. `gh auth git-credential`, or osxkeychain shims) wouldn't be found by our
-// `git` subprocess — making push/pull fail even when the user is authed. Prepend the common
-// bin dirs. GIT_TERMINAL_PROMPT=0 makes auth failures error out fast instead of hanging on a
-// username prompt (there's no TTY here).
-const GIT_ENV: NodeJS.ProcessEnv = {
-  ...process.env,
-  PATH: `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin${process.env.PATH ? `:${process.env.PATH}` : ''}`,
-  GIT_TERMINAL_PROMPT: '0'
-}
+// The environment every `git`/`gh` subprocess gets: the GUI-blind POSIX bin dirs prepended (macOS
+// credential helpers), and GIT_TERMINAL_PROMPT=0 so auth failures error out fast instead of hanging
+// on a prompt with no TTY. Both halves — and the reason the prepend must not happen on Windows
+// (issue #583) — live in git-env.ts, which github/credentials.ts imports as well.
+const GIT_ENV: NodeJS.ProcessEnv = gitEnv()
 
 // Single-flight registry for the one clone the app runs at a time. Module-scoped so a
 // macOS window re-creation can't orphan it.
@@ -61,14 +45,15 @@ let ghAuthedCache: { value: boolean; at: number } | null = null
 let ghAuthedInFlight: Promise<boolean> | null = null
 
 async function ghAuthed(): Promise<boolean> {
-  if (!GH_PATH) return false
+  const gh = ghPath()
+  if (!gh) return false
   const now = Date.now()
   if (ghAuthedCache && now - ghAuthedCache.at < GH_AUTH_TTL_MS) return ghAuthedCache.value
   if (ghAuthedInFlight) return ghAuthedInFlight
   ghAuthedInFlight = (async () => {
     let value = false
     try {
-      await run(GH_PATH, ['auth', 'status'], { env: GIT_ENV, maxBuffer: 1024 * 1024 })
+      await run(gh, ['auth', 'status'], { env: GIT_ENV, maxBuffer: 1024 * 1024 })
       value = true
     } catch {
       value = false
@@ -88,7 +73,8 @@ async function ghAuthed(): Promise<boolean> {
  * call ever (no cache at all) reports `false` while the probe runs; that flips one refresh later.
  */
 function ghAuthedSwr(): boolean {
-  if (!GH_PATH) return false
+  const gh = ghPath()
+  if (!gh) return false
   const fresh = !!ghAuthedCache && Date.now() - ghAuthedCache.at < GH_AUTH_TTL_MS
   if (!fresh) void ghAuthed().catch(() => {})
   return ghAuthedCache?.value ?? false
@@ -201,6 +187,13 @@ function githubTokenFromGitCredentials(cwd: string): Promise<string | null> {
       const line = out.split('\n').find((l) => l.startsWith('password='))
       const token = line ? line.slice('password='.length).trim() : ''
       resolve(token || null)
+    })
+    // `git credential fill` can exit before reading the query (no helper configured, killed by
+    // the timeout above) — the EPIPE arrives as an async 'error' EVENT on the pipe, not a throw
+    // here, and unhandled it kills the main process (issue #382's class). The close handler
+    // already resolves this call; the error never carries the token, so logging the code is safe.
+    child.stdin.on('error', (e: NodeJS.ErrnoException) => {
+      console.warn(`[git] credential-fill stdin write failed (${e.code ?? e})`)
     })
     child.stdin.write('protocol=https\nhost=github.com\n\n')
     child.stdin.end()
@@ -350,7 +343,7 @@ export class GitService {
       hasRemote: false,
       hasOrigin: false,
       hasUpstream: false,
-      ghAvailable: !!GH_PATH,
+      ghAvailable: !!ghPath(),
       ghAuthed: false,
       staged: [],
       changes: []
@@ -380,7 +373,10 @@ export class GitService {
         git(cwd, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}']),
         git(cwd, ['diff', '--cached', '--numstat']),
         git(cwd, ['diff', '--numstat']),
-        git(cwd, ['status', '--porcelain'])
+        // -uall forces git to list every untracked file individually instead of collapsing an
+        // entirely-untracked directory into one `?? dir/` entry (issue: SC panel showed a folder
+        // row that, when clicked, opened a diff node against a directory). Still respects .gitignore.
+        git(cwd, ['status', '--porcelain', '-uall'])
       ])
     const gh = ghAuthedSwr()
 
@@ -419,6 +415,9 @@ export class GitService {
       let p = raw.slice(3)
       if (p.includes(' -> ')) p = p.split(' -> ')[1] // rename: use new path
       const unquoted = p.replace(/^"|"$/g, '')
+      // Defense in depth against -uall: a directory-shaped entry (trailing '/') can never be
+      // opened as a file diff, so drop it here rather than let it reach the diff-node click path.
+      if (unquoted.endsWith('/')) continue
 
       if (x === '?' && y === '?') {
         changes.push({ path: unquoted, status: 'U', added: 0, deleted: 0 })
@@ -445,7 +444,7 @@ export class GitService {
       hasRemote,
       hasOrigin,
       hasUpstream,
-      ghAvailable: !!GH_PATH,
+      ghAvailable: !!ghPath(),
       ghAuthed: gh,
       staged,
       changes
@@ -782,7 +781,8 @@ export class GitService {
   }
 
   async publish(cwd: string, name: string, isPrivate: boolean): Promise<GitResult> {
-    if (!GH_PATH) return { ok: false, message: 'GitHub CLI (gh) not found.' }
+    const gh = ghPath()
+    if (!gh) return { ok: false, message: 'GitHub CLI (gh) not found.' }
     const repo = (name || '').trim()
     // GitHub repo names (optionally `owner/repo`) are limited to these chars and
     // must not start with `-`, so gh can't read the value as an option flag.
@@ -802,7 +802,7 @@ export class GitService {
     }
     try {
       await run(
-        GH_PATH,
+        gh,
         ['repo', 'create', repo, isPrivate ? '--private' : '--public', '--source=.', '--push'],
         { cwd, env, maxBuffer: 10 * 1024 * 1024 }
       )

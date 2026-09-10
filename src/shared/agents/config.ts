@@ -695,7 +695,32 @@ export function resolvePermissionMode(
   project: { defaultPermissionMode?: AgentPermissionMode } | undefined,
   settings: { claudePermissionMode: AgentPermissionMode }
 ): AgentPermissionMode {
-  if (isPermissionMode(project?.defaultPermissionMode)) return project.defaultPermissionMode
-  if (isPermissionMode(settings.claudePermissionMode)) return settings.claudePermissionMode
-  return DEFAULT_PERMISSION_MODE
+  return resolvePermissionModeWithSource(project, settings).mode
+}
+
+/**
+ * The same resolution, plus WHO chose the mode — and that second half is a security fact, not a
+ * nicety.
+ *
+ * `project.defaultPermissionMode` is persisted to `.nodeterm/project.json`, which is git-shared:
+ * a `bypassPermissions` override travels to everyone who clones the repo. So anything that
+ * LOOSENS a gate on the strength of the mode (today: the canvas-control confirm waiver,
+ * `decideControlConfirm` in @shared/control-confirm) must be able to tell "the user set this
+ * globally on this machine" from "this arrived in somebody's repo". `'default'` is its own answer
+ * rather than being folded into `'global'`: nobody has chosen anything, and a caller that treats
+ * an unset setting as a deliberate global choice is reading consent into silence.
+ *
+ * `resolvePermissionMode` delegates here so the two can never disagree about which half wins.
+ */
+export function resolvePermissionModeWithSource(
+  project: { defaultPermissionMode?: AgentPermissionMode } | undefined,
+  settings: { claudePermissionMode: AgentPermissionMode }
+): { mode: AgentPermissionMode; source: 'project' | 'global' | 'default' } {
+  if (isPermissionMode(project?.defaultPermissionMode)) {
+    return { mode: project.defaultPermissionMode, source: 'project' }
+  }
+  if (isPermissionMode(settings.claudePermissionMode)) {
+    return { mode: settings.claudePermissionMode, source: 'global' }
+  }
+  return { mode: DEFAULT_PERMISSION_MODE, source: 'default' }
 }

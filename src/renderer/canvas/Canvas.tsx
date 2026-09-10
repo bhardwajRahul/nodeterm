@@ -520,6 +520,19 @@ import { chordHeld, isHoldChord, isModifierEventKey, matchesShortcut } from '@sh
 // write/close as "the confirm-gated pair" from inside `src/main` — which this project cannot see —
 // while the gating lived in two hand-written blocks here, so the set decided nothing.
 import { isDestructiveVerb, dryRunRequested } from '@shared/control-verbs'
+import {
+  confirmExpiresAt,
+  isWaivableVerb,
+  waivedNotice,
+  CONTROL_REQUEST_TIMEOUT_MS
+} from '@shared/control-confirm'
+import { useControlConfirm } from '../state/controlConfirm'
+import { controlConfirmDecision } from '../state/controlConfirmGate'
+import {
+  bulkCloseMessage,
+  parseCloseTargets,
+  CLOSE_BULK_MAX
+} from '../lib/closeTargets'
 import { canvasSyncTarget } from './collab-sync'
 import {
   applyCanvasMutation,
@@ -632,6 +645,29 @@ interface ConfirmState {
   /** Set when an AGENT asked for this dialog: it is answered by an explicit click, never by an
    *  Enter the user aimed at their terminal (see components/confirm-key). */
   requestedBy?: string
+  /**
+   * The verb whose confirm a "Don't ask again" checkbox may waive for this app run
+   * (@shared/control-confirm). Set ONLY by the canvas-control dispatch, and only for a verb the
+   * shared table admits — `open-project` never carries it.
+   *
+   * A verb string rather than a ready-made `option`: the checkbox is live UI state and this object
+   * is a snapshot taken when the dialog opened, so an `option.checked` stored here would be frozen
+   * at `false` for the dialog's whole life. The render site builds the control and applies the
+   * waiver at click time, where the state is current.
+   */
+  waiveVerb?: string
+  /**
+   * When the request behind this dialog expires (`Date.now()`-scale). Set by the canvas-control
+   * dispatch, because main abandons the request after `CONTROL_REQUEST_TIMEOUT_MS` and tells the
+   * renderer nothing — so the dialog outlived the thing it was asking about AND kept `confirmBusy`
+   * true, which refused every later verb with "a confirmation is already pending" for the rest of
+   * the app run. Absent = no deadline (every human-initiated confirm).
+   */
+  expiresAt?: number
+  /** Runs when `expiresAt` passes with the dialog still open — the dispatch's chance to answer the
+   *  (probably already abandoned) request honestly instead of leaving it to time out. Never
+   *  `onCancel`: nobody denied anything. */
+  onExpire?: () => void
 }
 interface RemoveState {
   groupId: string
@@ -1551,6 +1587,51 @@ export function Canvas() {
     confirmFlags.current.confirm = !!v
     setConfirmState(v)
   }, [])
+  // "Don't ask again" on an agent-requested destructive confirm. Canvas state rather than a field
+  // on `ConfirmState` so the checkbox reads and writes LIVE (see `ConfirmState.waiveVerb`); reset
+  // by the dispatch every time it raises one of those dialogs, so a tick never carries over to the
+  // next request.
+  const [controlWaive, setControlWaive] = useState(false)
+  /**
+   * An agent-requested confirm collects itself when its REQUEST has expired.
+   *
+   * Main gives up on a control request after `CONTROL_REQUEST_TIMEOUT_MS` and sends the renderer
+   * nothing, so the dialog sat there for the rest of the app run — asking about work nobody was
+   * waiting for, and holding `confirmBusy` true, which refused every subsequent `write`/`close`
+   * with "a confirmation is already pending — try again". That is the loop the user saw: the same
+   * node asked about again and again, because the agent was told to retry and every retry hit a
+   * dialog that could no longer be answered.
+   *
+   * It replies `expired` on the way out rather than cancelling: `denied by user` would be a lie
+   * about a decision the human never made, and a reply main has already timed out is simply
+   * dropped (`if (!pending) return`). If the renderer's timer fires while main IS still waiting —
+   * a background tab's throttled `setTimeout`, a clock jump — that reply is what stops the caller
+   * waiting out the remaining budget for a dialog that is gone.
+   *
+   * The notice is deliberately non-blocking: raising an alert would keep `confirmBusy` true, i.e.
+   * reproduce the bug this closes with better wording.
+   */
+  useEffect(() => {
+    const at = confirm?.expiresAt
+    if (!at) return
+    const fire = (): void => {
+      confirm?.onExpire?.()
+      setConfirm(null)
+      setNotice({
+        kind: 'info',
+        text: `The request from ${confirm?.requestedBy ?? 'an agent'} expired before it was answered — nothing was done.`
+      })
+    }
+    const ms = at - Date.now()
+    if (ms <= 0) {
+      fire()
+      return
+    }
+    const t = setTimeout(fire, ms)
+    return () => clearTimeout(t)
+    // `confirm` is replaced wholesale per dialog, so its identity is the right key.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [confirm, setConfirm])
   const setRemoveTarget = useCallback((v: RemoveState | null) => {
     confirmFlags.current.remove = !!v
     setRemoveTargetState(v)
@@ -9185,6 +9266,13 @@ export function Canvas() {
           message: opPlan.message,
           confirmLabel: opPlan.confirmLabel,
           requestedBy: opTitle,
+          // NO `waiveVerb`. `open-project` is outside `CONFIRM_WAIVABLE_VERBS` and must stay
+          // outside it: it widens the app's blast radius (a new directory registered as a project,
+          // plus a grant the caller then feeds to `--project`) rather than acting inside it, and it
+          // cannot produce the dialog storm the waiver exists to end — `recordAttachConsent`
+          // already dedupes it per (caller, project). The table refuses it too; this is the belt.
+          expiresAt: confirmExpiresAt(Date.now()),
+          onExpire: () => reply({ ok: false, error: 'expired before the user answered' }),
           onConfirm: () => {
             setConfirm(null)
             opFinish(
@@ -11244,6 +11332,56 @@ export function Canvas() {
               reply({ ok: false, error: 'write requires --node' })
               return
             }
+            // The write itself, extracted so the waived path and the confirmed path are the SAME
+            // code. A waiver must change WHETHER the human is asked and nothing else — a second
+            // copy of the delivery is how the un-asked path quietly loses the per-node lock below.
+            const runWrite = async (): Promise<void> => {
+              // The SAME per-node lock the restart, hibernate-exit and wake-resume runs take.
+              // Its doc comment spells out why they take it: a second write arriving while a
+              // line sits un-submitted in the pane is spliced into that line. Every other
+              // `api.pty.sendText` caller was outside the lock, this one included, so a
+              // confirmed `write` could land in the middle of a hibernate exit's blind
+              // KILL_LINE + `/exit` (agent-restart.ts) or into an echo-verified launch line
+              // still waiting on its verification (command-delivery.ts). The dialog makes that
+              // rare, not impossible — the human confirms on their own clock, not the pane's.
+              let thrown: string | null = null
+              const outcome = await guardConcurrentRestart(args.node, async () => {
+                try {
+                  const ok = await api.pty.sendText(args.node, args.text ?? '')
+                  return ok ? ('sent' as const) : ('failed' as const)
+                } catch (e) {
+                  thrown = String(e)
+                  return 'failed' as const
+                }
+              })()
+              if (outcome === 'not-eligible') {
+                // A distinct, retryable refusal rather than a corrupted pane. `not-eligible` is
+                // the guard's own word for "that node is mid-run"; the run holding it will
+                // finish and the agent can send again.
+                reply({ ok: false, error: 'target is busy with a restart or wake — try again' })
+                return
+              }
+              reply({
+                ok: outcome === 'sent',
+                message: outcome === 'sent' ? 'sent' : 'failed',
+                error: outcome === 'sent' ? undefined : (thrown ?? 'sendText failed')
+              })
+            }
+            // Has the user waived this verb's dialog (this app run / permanently / while their own
+            // GLOBAL permission mode is Bypass)? The whole decision is the pure
+            // `decideControlConfirm` — see @shared/control-confirm for why the bypass branch needs
+            // both a machine-local opt-in AND a mode the user set globally.
+            const writeWaiver = controlConfirmDecision(verb)
+            if (writeWaiver.via) {
+              // A waived destructive action still ANNOUNCES itself, and names the waiver that let
+              // it through. Losing the dialog must not mean losing the record.
+              setNotice({
+                kind: 'info',
+                text: waivedNotice(`Agent "${srcTitle}" wrote to ${args.node}`, writeWaiver.via)
+              })
+              await runWrite()
+              return
+            }
             // One confirm dialog at a time: setConfirm would replace a pending one, orphaning its
             // reply and hanging that earlier request to its 120s timeout — and a second dialog
             // mounted on top of a destructive one (the worktree-removal confirm) turned an Enter
@@ -11262,50 +11400,69 @@ export function Canvas() {
               return
             }
             // Destructive → confirm. Replies on confirm AND cancel.
+            setControlWaive(false)
             setConfirm({
               message: `Agent "${srcTitle}" wants to send to ${args.node}:\n\n${args.text ?? ''}`,
               confirmLabel: 'Send',
               requestedBy: srcTitle,
+              waiveVerb: isWaivableVerb(verb) ? verb : undefined,
+              expiresAt: confirmExpiresAt(Date.now()),
+              onExpire: () => reply({ ok: false, error: 'expired before the user answered' }),
               onConfirm: async () => {
                 setConfirm(null)
-                // The SAME per-node lock the restart, hibernate-exit and wake-resume runs take.
-                // Its doc comment spells out why they take it: a second write arriving while a
-                // line sits un-submitted in the pane is spliced into that line. Every other
-                // `api.pty.sendText` caller was outside the lock, this one included, so a
-                // confirmed `write` could land in the middle of a hibernate exit's blind
-                // KILL_LINE + `/exit` (agent-restart.ts) or into an echo-verified launch line
-                // still waiting on its verification (command-delivery.ts). The dialog makes that
-                // rare, not impossible — the human confirms on their own clock, not the pane's.
-                let thrown: string | null = null
-                const outcome = await guardConcurrentRestart(args.node, async () => {
-                  try {
-                    const ok = await api.pty.sendText(args.node, args.text ?? '')
-                    return ok ? ('sent' as const) : ('failed' as const)
-                  } catch (e) {
-                    thrown = String(e)
-                    return 'failed' as const
-                  }
-                })()
-                if (outcome === 'not-eligible') {
-                  // A distinct, retryable refusal rather than a corrupted pane. `not-eligible` is
-                  // the guard's own word for "that node is mid-run"; the run holding it will
-                  // finish and the agent can send again.
-                  reply({ ok: false, error: 'target is busy with a restart or wake — try again' })
-                  return
-                }
-                reply({
-                  ok: outcome === 'sent',
-                  message: outcome === 'sent' ? 'sent' : 'failed',
-                  error: outcome === 'sent' ? undefined : (thrown ?? 'sendText failed')
-                })
+                await runWrite()
               },
               onCancel: () => reply({ ok: false, error: 'denied by user' })
             })
             return
           }
           case 'close': {
-            if (!args.node) {
-              reply({ ok: false, error: 'close requires --node' })
+            // `--node` is a LIST (`a,b,c`), which is how the Server Edition's headless close has
+            // always read it — this dispatch used the raw string as one id, so a comma list called
+            // `deleteNodes(['a,b,c'])` (a no-op) and answered `closed a,b,c`. The single-id form is
+            // untouched, deliberately including its lack of an existence check; see
+            // `lib/closeTargets.ts` for that asymmetry and why the bulk form refuses the whole
+            // request instead.
+            const targets = parseCloseTargets(args.node, nodesRef.current)
+            if (targets.kind === 'error') {
+              reply({ ok: false, error: targets.error })
+              return
+            }
+            const closeIds = targets.kind === 'single' ? [targets.id] : targets.ids
+            const closeMessage =
+              targets.kind === 'single'
+                ? `Agent "${srcTitle}" wants to close node ${targets.id}. Close it?`
+                : bulkCloseMessage(srcTitle, targets.labels)
+            const closeLabel = targets.kind === 'single' ? 'Close' : `Close ${closeIds.length}`
+            const runClose = (): void => {
+              // Canonical teardown: deleteNodes() destroys the local tmux session (remote-guarded),
+              // drops persisted agentStatus, and reparents any group children. Don't hand-roll it.
+              // ONE call for the whole list — its own paths are batched, and N calls would give N
+              // undo entries and N writeDisk passes for one decision.
+              deleteNodes(closeIds)
+              const dead = new Set(closeIds)
+              setControlEdges((es) => es.filter((e) => !dead.has(e.source) && !dead.has(e.target)))
+              reply({
+                ok: true,
+                message:
+                  closeIds.length === 1
+                    ? `closed ${closeIds[0]}`
+                    : `closed ${closeIds.length} nodes: ${closeIds.join(', ')}`
+              })
+            }
+            // Waived? Same decision table as `write` (@shared/control-confirm).
+            const closeWaiver = controlConfirmDecision(verb)
+            if (closeWaiver.via) {
+              setNotice({
+                kind: 'info',
+                text: waivedNotice(
+                  closeIds.length === 1
+                    ? `Agent "${srcTitle}" closed ${closeIds[0]}`
+                    : `Agent "${srcTitle}" closed ${closeIds.length} nodes`,
+                  closeWaiver.via
+                )
+              })
+              runClose()
               return
             }
             // One confirm dialog at a time (see `write`): reject rather than orphan a pending one —
@@ -11316,20 +11473,18 @@ export function Canvas() {
               return
             }
             // Destructive → confirm. Replies on confirm AND cancel.
+            setControlWaive(false)
             setConfirm({
-              message: `Agent "${srcTitle}" wants to close node ${args.node}. Close it?`,
+              message: closeMessage,
               requestedBy: srcTitle,
-              confirmLabel: 'Close',
+              confirmLabel: closeLabel,
               danger: true,
+              waiveVerb: isWaivableVerb(verb) ? verb : undefined,
+              expiresAt: confirmExpiresAt(Date.now()),
+              onExpire: () => reply({ ok: false, error: 'expired before the user answered' }),
               onConfirm: () => {
                 setConfirm(null)
-                // Canonical teardown: deleteNodes() destroys the local tmux session (remote-guarded),
-                // drops persisted agentStatus, and reparents any group children. Don't hand-roll it.
-                deleteNodes([args.node])
-                setControlEdges((es) =>
-                  es.filter((e) => e.source !== args.node && e.target !== args.node)
-                )
-                reply({ ok: true, message: `closed ${args.node}` })
+                runClose()
               },
               onCancel: () => reply({ ok: false, error: 'denied by user' })
             })
@@ -14036,7 +14191,27 @@ export function Canvas() {
           // The user did not open this one — an agent did. It appeared under their hands, so it is
           // answered by a click, never by a keystroke aimed somewhere else (components/confirm-key).
           enterConfirms={!confirm.requestedBy}
-          onConfirm={confirm.onConfirm}
+          // "Don't ask again" — offered ONLY for a verb the shared table admits, and only ever for
+          // THIS APP RUN. The permanent waiver deliberately lives in Settings → Agents instead: a
+          // dialog that appeared under the user's hands must not be able to switch a destructive
+          // gate off forever on one stray click. Built here rather than stored on `ConfirmState`
+          // because the checkbox is live state and that object is a snapshot.
+          option={
+            confirm.waiveVerb
+              ? {
+                  label: "Don't ask again while nodeterm is running",
+                  checked: controlWaive,
+                  onChange: setControlWaive
+                }
+              : undefined
+          }
+          onConfirm={() => {
+            // Granted on CONFIRM only. A denial must never widen anything, whatever is ticked.
+            if (confirm.waiveVerb && controlWaive) {
+              useControlConfirm.getState().waiveForSession(confirm.waiveVerb)
+            }
+            confirm.onConfirm()
+          }}
           onCancel={() => {
             confirm.onCancel?.()
             setConfirm(null)

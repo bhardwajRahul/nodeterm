@@ -1981,6 +1981,74 @@ else, and its context links must keep classifying across restarts).
   (unlike with `--project`, where the ids would live in another project) against the serialized
   nodes, defaults come from the OWNING project (`projectPermissionMode(owner, …)`, its account,
   its `ssh`), and `--after`'s dep ropes are left to `missingDepRopes` at that project's next load.
+  **The destructive confirm, and who may waive it** (`@shared/control-confirm`, 2026-09). The
+  dialog `write` / `close` / `open-project` raise is the ONLY place a human stands between a
+  canvas-control agent and the workspace — per-node identity is not enforced until
+  `NODE_IDENTITY_STRICT_AFTER`, so a `legacy` caller still reaches the dispatch — and it used to
+  ask EVERY time with no way to say "yes, all of them". Closing 14 finished stations was 14
+  dialogs, and the 15th request was refused with `a confirmation is already pending`. Three things
+  changed, and the last one was the actual bug:
+  - **`close --node a,b,c` is ONE dialog** (`lib/closeTargets.ts`, pure). The grammar is not new —
+    the Server Edition's headless `close` has read a comma list since it shipped, including its
+    "validate the whole list before killing anything" rule; the DESKTOP dispatch read the flag as
+    one id, so a comma list called `deleteNodes(['a,b,c'])` (a no-op) and answered `closed a,b,c`.
+    A destructive verb reporting success for work it did not do is worse than either doing or
+    refusing it. The single-id form is bit-identical, **deliberately including its lack of an
+    existence check**; the bulk form refuses the WHOLE list on an unknown id and names it, because
+    with 14 ids the user cannot audit the list themselves. Capped at `CLOSE_BULK_MAX` (50) and the
+    dialog spells out at most 12 names then counts the rest — a name the user cannot see is not
+    consent.
+  - **"Don't ask again" is bounded by the app's lifetime, and the permanent version is not
+    reachable from the dialog.** The checkbox grants a waiver in the transient
+    `state/controlConfirm.ts` (memory only — not `settings.json`, not `localStorage`), per VERB, so
+    quitting restores the gate; the PERMANENT waiver exists only in Settings → Agents, where the
+    option says "permanently". A dialog that appeared under the user's hands must not be able to
+    switch a destructive gate off forever on one stray click, and a waiver granted by a CANCEL must
+    not exist at all (the grant hangs off `onConfirm`, pinned by `control-destructive.test.ts`).
+    Waiving is not silence: every waived application raises the info strip through `waivedNotice`,
+    which names the waiver that let it through and points at Settings.
+  - **`bypassPermissions` needs TWO locks, and this is the trap to understand before touching it.**
+    The permission mode is persisted to `.nodeterm/project.json`, which is **git-shared** — so
+    keying the waiver on the mode alone would let a repository the user CLONED silently disable
+    their destructive-action gate. It therefore requires a machine-local opt-in
+    (`controlConfirmWaivers.bypassMode`, default off) **and** a mode that came from the user's own
+    GLOBAL setting: `resolvePermissionModeWithSource` answers `project | global | default`, and
+    only `global` can waive. `default` is its own answer rather than folded into `global` because
+    nobody chose it, and reading an unset setting as a deliberate choice is reading consent into
+    silence. The claude version gate is deliberately NOT applied here (it exists to degrade `auto`
+    for an old CLI; a security decision must not hang on a `claude --version` probe).
+  - **`open-project` can never be waived**, by table (`CONFIRM_WAIVABLE_VERBS`) rather than by a
+    line somebody forgot at one of three call sites. It widens the app's blast radius (a new
+    directory registered as a project, plus a grant the caller feeds to `--project`) instead of
+    acting inside it, and it cannot produce the dialog storm the waiver exists to end —
+    `recordAttachConsent` already dedupes it per (caller, project).
+  **An agent-requested dialog knows its own request's lifetime** (`ConfirmState.expiresAt` /
+  `onExpire`, `CONTROL_REQUEST_TIMEOUT_MS` now shared with main). Main abandons a control request
+  after 120 s and tells the renderer NOTHING, so the dialog stayed on screen asking about work
+  nobody was waiting for — and, worse, kept `confirmBusy()` true, which refused every later
+  `write`/`close` with `a confirmation is already pending — try again` for the rest of the app run.
+  **That is the "the same dialog keeps coming back" report**, and it is a single-canvas loop: the
+  reply says retryable, the agent retries, every retry is refused by the orphan, and the moment the
+  user finally answers it a queued retry raises a fresh dialog for the same node. The deadline is
+  measured from the RENDERER's receipt, so it always fires a hair AFTER main gave up, never before
+  (the other direction would abandon a dialog whose answer main would still accept); it replies
+  `expired` rather than `denied by user` (nobody denied anything, and a reply main has already
+  timed out is simply dropped); and the notice is a fading info strip, because raising an alert
+  would keep `confirmBusy()` true — i.e. reproduce the bug with better wording. `close-worktree
+  --mode remove`'s dialog is deliberately outside this: it replies to the CLI immediately
+  ("the user decides") so there is no pending request to expire — its own `confirmBusy` hold is a
+  separate, still-open gap.
+  **MEASURED, and the answer is no: two canvases cannot raise two dialogs for one request.** The
+  suspicion was worth checking because the same project can be open on a desktop and in a Server
+  Edition browser at once. Desktop main forwards each request to `getMainWindow()` — one
+  BrowserWindow, so at most one dialog exists per request; the Server Edition raises none at all
+  (its control is HEADLESS — `HeadlessNodeFactory.close` is gated by verified identity plus
+  process-local creator ownership, and the browser bridge's `onAgentControl` is `noopUnsub`); and
+  the shim's endpoint failover cannot duplicate a request either, because the control POST carries
+  **no `--max-time`**, so a POST waiting on a human eventually gets an HTTP answer and
+  `nt_reached()` is true — failover fires only on a dead transport (`000`/empty). If a future change
+  gives that curl a timeout, this paragraph stops being true: a confirm-gated verb would then fail
+  over mid-wait and a second instance WOULD open a second dialog for the same logical request.
   **Grouping verbs** (`group` / `ungroup` / `move` / `arrange` / `align`): `group` wraps **sibling**
   objects — nodes or frames — into a new frame in their shared container (a mixed-container set, or
   an ancestor plus its descendant, is refused with that reason); `ungroup --group <id>` dissolves a

@@ -459,6 +459,32 @@ describe('parseControlRequest', () => {
     }
   })
 
+  it('both agent-facing texts say `close` takes a COMMA LIST, confirmed in ONE dialog', () => {
+    for (const body of [buildCanvasSkillBody('/x/shim.sh'), buildCanvasControlInstructions('/tmp/nodeterm.sh')]) {
+      // The grammar exists on both surfaces now (the desktop used to read the whole flag as one
+      // id), and an orchestrator that does not know it closes a finished wave one call at a time —
+      // which is one dialog per node, with every call after the first refused while a dialog is
+      // open. That was the reported pain; the text is what makes the fix reachable.
+      expect(body).toContain('close --node <id,id>')
+      expect(body.toUpperCase()).toContain('COMMA LIST')
+      expect(body.toUpperCase()).toContain('ONE dialog'.toUpperCase())
+      // …and that a bad id refuses the WHOLE list, so a caller does not have to guess which of its
+      // fourteen nodes survived.
+      expect(body).toMatch(/refuses the whole request/i)
+    }
+  })
+
+  it('the skill tells an agent NOT to retry a denial in the hope the dialog is off', () => {
+    // A user may waive a verb's dialog (for the session, or permanently). The verb then just
+    // applies, and the caller cannot tell which happened — so the one behaviour to rule out
+    // explicitly is re-sending a `denied by user` request to see whether it lands this time.
+    const body = buildCanvasSkillBody('/x/shim.sh')
+    expect(body).toMatch(/never re-send a `denied by user` request/i)
+    // And "a confirmation is already pending" must not read as an invitation to spin.
+    expect(body).toContain('a confirmation is already pending')
+    expect(body).toMatch(/do not spin/i)
+  })
+
   it('both agent-facing texts state the Server creator-ownership and inert-boot contract', () => {
     for (const body of [buildCanvasSkillBody('/x/shim.sh'), buildCanvasControlInstructions('/tmp/nodeterm.sh')]) {
       expect(body).toContain('ownership is fail-closed')

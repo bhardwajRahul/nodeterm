@@ -2775,9 +2775,11 @@ body,
   top: 26px;
   left: 6px;
   z-index: 5;
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  /* Sections stack; the swatches inside each one keep the old 4-up grid via --swatch-cols. */
+  display: flex;
+  flex-direction: column;
   gap: 6px;
+  --swatch-cols: 4;
   background: var(--panel-header);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -3191,10 +3193,33 @@ body,
 }
 
 .ctx-colors {
-  display: grid;
-  grid-template-columns: repeat(7, 1fr);
+  display: flex;
+  flex-direction: column;
   gap: 5px;
+  --swatch-cols: 7;
   padding: 6px 8px;
+}
+
+/* Shared by every palette surface (NodeColorSwatches). The heading is what tells the user which
+   circle is Claude's — an agent brand color is unidentifiable as a bare dot. */
+.swatch-section__label {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.swatch-section__grid {
+  display: grid;
+  grid-template-columns: repeat(var(--swatch-cols, 7), 1fr);
+  gap: 5px;
+}
+
+.color-popover button[data-selected='true'],
+.ctx-colors button[data-selected='true'] {
+  outline: 1.5px solid var(--text);
+  outline-offset: 1.5px;
 }
 
 .ctx-colors button {

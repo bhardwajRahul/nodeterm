@@ -5,7 +5,7 @@
 // in the same PR.
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_BOARD_COLUMNS, makeColumnId } from './kanban-default-board'
-import { NODE_COLORS } from './node-colors'
+import { SYSTEM_NODE_COLORS } from './node-colors'
 
 describe('DEFAULT_BOARD_COLUMNS', () => {
   it('is To Do / In Progress / Done, in that order', () => {
@@ -14,9 +14,9 @@ describe('DEFAULT_BOARD_COLUMNS', () => {
 
   it('paints them from the node palette: blue, yellow, green', () => {
     expect(DEFAULT_BOARD_COLUMNS.map((c) => c.color)).toEqual([
-      NODE_COLORS[0],
-      NODE_COLORS[2],
-      NODE_COLORS[1]
+      SYSTEM_NODE_COLORS[0],
+      SYSTEM_NODE_COLORS[2],
+      SYSTEM_NODE_COLORS[1]
     ])
     expect(DEFAULT_BOARD_COLUMNS.map((c) => c.color)).toEqual(['#0a84ff', '#ffd60a', '#32d74b'])
   })

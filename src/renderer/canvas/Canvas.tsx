@@ -469,7 +469,12 @@ import {
 import { uuid } from '../lib/uuid'
 import { planReopen, type ReopenPlan } from '../lib/reopenPlan'
 import { oneLine } from '@shared/one-line'
-import { invalidNodeColorMessage, isNodeColor } from '@shared/node-colors'
+import {
+  invalidNodeColorMessage,
+  invalidSystemNodeColorMessage,
+  resolveNodeColor,
+  resolveSystemNodeColor
+} from '@shared/node-colors'
 import { parseLenses, verifyLensPrompt, verifySynthesisPrompt } from '../lib/verifyPanel'
 import { useSettings } from '../state/settings'
 import { activePermissionMode, grokCliCapsNow, projectPermissionMode } from '../state/permissionMode'
@@ -9228,6 +9233,18 @@ export function Canvas() {
         }
         const opTitle =
           oneLine((opLive?.data.title as string) ?? opStored?.title ?? '') || sourceNodeId
+        // A project color is the ACTIVE TAB's TEXT color, so it takes the narrower system subset
+        // (see isSystemNodeColor) — and it takes a subset at ALL because this flag reached
+        // `registerProject` unvalidated: an agent-supplied string persisted into project.json and
+        // interpolated into a style, which is exactly the boundary node-colors.ts exists to be.
+        let opColor: string | undefined
+        if (args.color !== undefined) {
+          opColor = resolveSystemNodeColor(args.color)
+          if (opColor === undefined) {
+            reply({ ok: false, error: invalidSystemNodeColorMessage() })
+            return
+          }
+        }
         // Apply one consent decision: register (create/adopt/idempotent hit) without activating,
         // persist, remember the (caller, project) pair for dialog dedupe — authorization stays
         // main-side — and reply with the id the caller can feed `--project`.
@@ -9235,7 +9252,7 @@ export function Canvas() {
           const r = useProjects.getState().registerProject({
             resolvedCwd,
             name: args.name,
-            color: args.color,
+            color: opColor,
             ...(adoptProbed ? { probed: adoptProbed } : {})
           })
           recordAttachConsent(sourceNodeId, r.project.id)
@@ -10510,9 +10527,16 @@ export function Canvas() {
             return
           }
           case 'group': {
-            if (args.color !== undefined && !isNodeColor(args.color)) {
-              reply({ ok: false, error: invalidNodeColorMessage() })
-              return
+            // Resolve BEFORE the allowlist: `--color claude` and `--color #D97757` are what a
+            // caller actually types, and both land on the same canonical palette value. Only the
+            // resolved value is ever persisted (see resolveNodeColor).
+            let groupColor: string | undefined
+            if (args.color !== undefined) {
+              groupColor = resolveNodeColor(args.color)
+              if (groupColor === undefined) {
+                reply({ ok: false, error: invalidNodeColorMessage() })
+                return
+              }
             }
             const ids = (args.nodes ?? '').split(',').map((s) => s.trim()).filter(Boolean)
             const live = nodesRef.current as CanvasNode[]
@@ -10531,7 +10555,7 @@ export function Canvas() {
               reply({ ok: false, error: 'group: nodes must be siblings in one container and may not include an ancestor with its descendant' })
               return
             }
-            if (args.label || args.color) {
+            if (args.label || groupColor) {
               grouped = grouped.map((nd) =>
                 nd.id === groupNode.id
                   ? {
@@ -10539,7 +10563,7 @@ export function Canvas() {
                       data: {
                         ...nd.data,
                         ...(args.label ? { title: args.label } : {}),
-                        ...(args.color ? { color: args.color } : {})
+                        ...(groupColor ? { color: groupColor } : {})
                       }
                     }
                   : nd
@@ -11214,7 +11238,8 @@ export function Canvas() {
             return
           }
           case 'color': {
-            if (!isNodeColor(args.color)) {
+            const color = resolveNodeColor(args.color)
+            if (color === undefined) {
               reply({ ok: false, error: invalidNodeColorMessage() })
               return
             }
@@ -11231,7 +11256,7 @@ export function Canvas() {
             setNodes((nodes) =>
               nodes.map((node) =>
                 selected.has(node.id)
-                  ? { ...node, data: { ...node.data, color: args.color } }
+                  ? { ...node, data: { ...node.data, color } }
                   : node
               )
             )
@@ -11240,8 +11265,8 @@ export function Canvas() {
             const note = skipped ? ` (${skipped} unknown id(s) skipped)` : ''
             reply({
               ok: true,
-              message: `colored ${colored.length} node(s) ${args.color}${note}`,
-              result: { colored, skipped, color: args.color }
+              message: `colored ${colored.length} node(s) ${color}${note}`,
+              result: { colored, skipped, color }
             })
             return
           }

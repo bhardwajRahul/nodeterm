@@ -2,7 +2,7 @@ import { Fragment, memo, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { IconClose } from '../icons'
 import type { KanbanColumn as KanbanColumnT } from '@shared/types'
-import { NODE_COLORS } from '../../state/workspace'
+import { SYSTEM_NODE_COLOR_SWATCHES } from '@shared/node-colors'
 import type { KanbanCreateChoice, KanbanCreateOption } from './KanbanView'
 import { byLane, type KanbanSourceId } from '../../lib/kanbanSources'
 
@@ -174,10 +174,15 @@ export const KanbanColumn = memo(function KanbanColumn({
       </div>
       {column && swatchesOpen && (
         <div className="kanban-col__swatches">
-          {NODE_COLORS.map((c) => (
+          {/* System subset, not the agent colors: ColumnPill draws a column's color as 10px
+              TEXT on an 18% wash of itself, where grok grey and copilot purple fall under the
+              contrast floor. Node pickers offer the full palette. */}
+          {SYSTEM_NODE_COLOR_SWATCHES.map(({ value: c, label }) => (
             <button
               key={c}
               className="kanban-col__swatch"
+              title={label}
+              aria-label={label}
               style={{ background: c }}
               onClick={() => {
                 if (column) onRecolor?.(column.id, c)

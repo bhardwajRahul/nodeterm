@@ -2845,6 +2845,58 @@ disappearing" rather than as an occasional cull. The `vm_stat` reader is what ma
 again; the grace window was never the thing that was wrong.
 
 
+## Node colors (one palette, two sections)
+
+`src/shared/node-colors.ts` is the palette AND the control boundary — the picker's list and the
+allowlist `color --color C` validates against are the same array, deliberately, so the two can
+never disagree about what a legal colour is.
+
+It has two sections. The seven macOS **system** colours are the list it always was. The **agent**
+section is the brand colour of every builtin in `AGENT_CONFIG` plus `FALLBACK_AGENT_COLOR`, and it
+exists because those colours were *already on the canvas*: `createAgentNode` paints a new node from
+`AGENT_CONFIG` (the phone's `appendProjectNode` does the same), so a Claude node is born `#d97757`
+— which the picker could not offer back once the user changed it, and which
+`nodeterm color --color '#d97757'` refused with `node-color-invalid`, the app rejecting its own
+colour. MEASURED against the live hook server before the change; both faces are one gap.
+
+- **The agent section is DERIVED from `AGENT_CONFIG`, never re-typed.** Adding a builtin agent
+  extends the palette by construction. `node-colors.test.ts` pins it three ways — every builtin's
+  colour is in `NODE_COLORS`, every agent swatch's label is that agent's label, and `node-colors.ts`
+  contains no agent hex as a literal on a non-comment line. A second copy of a colour table is the
+  drift this file warns about everywhere else, and it has already happened once (see mobile below).
+- **`SYSTEM_NODE_COLORS` is the subset for surfaces where the value is drawn as TEXT or as an
+  opaque fill** — the app accent (`--accent` sits under hardcoded `#fff`), a project colour (the
+  active tab's label is `color: p.color`) and a kanban column colour (`ColumnPill` draws the title
+  in the raw hex at 10 px). It is also the **auto-assign rotation** for new frames, spawned teams
+  and fresh columns: rotating a frame onto Claude's orange says "this frame is Claude's" and means
+  nothing of the kind. The reason those surfaces differ is a measurement, not taste — on the dark
+  theme white on gemini `#4285f4` is ~3.6:1 and on grok `#64748b` ~4.0:1, both under the 4.5:1 floor
+  for the 10.5 px badge, and grok grey as tab text is ~2.6:1. Everywhere the colour is a dot, a
+  border or a 6–20 % wash (node headers, sticky, files, group frames, the account default colour)
+  offers the FULL palette.
+- **`resolveNodeColor` runs BEFORE the allowlist, and only its output is ever persisted.** It takes
+  a palette name (`blue`, `teal`, `claude`, `github copilot`) or the hex in any case, and yields a
+  canonical value or `undefined`. Names are accepted because the refusal they earned was measured
+  and expensive: seven opaque hexes taught nobody which one was teal, so a caller's next guess was
+  another name and another refusal. The boundary is unchanged by this — a name can only ever
+  resolve to a value the allowlist already held, and a name is never stored. The refusal now prints
+  `name #hex` per swatch (`nodeColorChoices`), and the agent-facing skill text is generated from the
+  same function per the canvas-control sync rule.
+  `open-project --color` takes the same treatment against the **system** resolver; it used to reach
+  `registerProject` with no validation at all.
+- **One component draws every picker** (`components/NodeColorSwatches.tsx`), because the palette now
+  has structure — headings and per-swatch names — and six copies of `NODE_COLORS.map(...)` are six
+  places to forget the heading. `NodeColorSwatches.guard.test.ts` fails on a `.color-popover` this
+  component does not own and on any renderer file that maps the palette into its own swatch row.
+  The name is the feature: an agent brand colour is unidentifiable as a bare circle.
+- **Mobile keeps its OWN list and is not updated here.** *nodeterm mobile* (`nodeterm-ios`,
+  separate private repo) hand-copies the agent colours in `NewSession.swift`, stamped
+  *"last verified 2026-07-17"*, to colour a session it creates; it has no node-colour picker at all,
+  so the palette change reaches it as nothing to do. That mirror is the concrete precedent for why
+  the desktop half is derived rather than typed — and it means a future brand-colour change owes an
+  iOS follow-up (@eneskirca), not a desktop one.
+
+
 ## Node icons (emoji or picture)
 
 A node may carry `data.icon` (`NodeIcon` in `@shared/node-icon`): `{type:'emoji', value}` or

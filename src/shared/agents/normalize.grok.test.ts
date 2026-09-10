@@ -6,8 +6,9 @@ import { grokRawFields, normalizeClaude, normalizeGrok, type RawHookEnvelope } f
  * snake_case ("pre_tool_use"), and the grok SDK path converts the top-level keys to snake_case.
  * Both spellings are therefore read, and the event name is canonicalized rather than matched
  * literally — read out of the shipped 1.0.0 docs, not inferred from claude's shape. Payloads WERE
- * captured on 1.0.13 (evidence/grok-hook-payloads.jsonl and grok-subagent-payloads.jsonl); the cases
- * below that are built from a capture say so.
+ * captured on 1.0.13 (`__fixtures__/grok/hook-payloads.json`); the cases
+ * below that are built from a capture say so. The behavioural pin over the live
+ * subagent payloads is `normalize.grok.capture.test.ts`, not the hand-built cases here.
  */
 function env(payload: Record<string, unknown>): RawHookEnvelope {
   return { nodeId: 'n1', agentId: 'grok', payload }
@@ -400,7 +401,9 @@ describe('grokRawFields', () => {
 
 /**
  * Subagent cards. Every payload below is copied from the 1.0.13 capture
- * (evidence/grok-subagent-payloads.jsonl, two parallel `explore` children), field names and all.
+ * (`__fixtures__/grok/hook-payloads.json`, two parallel `explore` children), field names and all.
+ * The live-payload pin is `normalize.grok.capture.test.ts`; these cases keep the mapping
+ * reachable when someone edits `normalizeGrok` without opening the fixture.
  *
  * These assert the mapped EVENT, not list membership: a test that only checks `canSubagent('grok')`
  * passes while `normalizeGrok` returns null and no card can ever render, which is exactly how the

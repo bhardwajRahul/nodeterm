@@ -762,7 +762,7 @@ export function normalizeGrok(env: RawHookEnvelope): NormalizedAgentEvent | null
     }
   }
   // Subagent cards. MEASURED (1.0.13, two parallel `explore` children — the capture is
-  // evidence/grok-subagent-payloads.jsonl):
+  // `__fixtures__/grok/hook-payloads.json`, pinned by `normalize.grok.capture.test.ts`):
   //   subagent_start  sessionId = the PARENT's, subagentId per INSTANCE, subagentType, description
   //   subagent_stop   sessionId = the CHILD's own (identical to its subagentId), lastAssistantMessage
   // Two children of the SAME type carried different `subagentId`s, which is why the card is keyed on

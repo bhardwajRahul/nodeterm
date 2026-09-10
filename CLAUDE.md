@@ -1200,9 +1200,12 @@ else, and its context links must keep classifying across restarts).
   before it can expose the feature.
 - **Grok** (`@xai-official/grok` 1.0.0, builtin since 2026-08) — in `AGENT_HOOK_TARGETS`,
   `RESUMABLE_AGENTS`, `RENAME_CAPABLE`, `PERMISSION_MODE_CAPABLE`, `CANVAS_CONTROL_CAPABLE`,
-  `CONTEXT_LINK_CAPABLE`, `CHAT_CAPABLE`, `TRANSFER_SOURCE_CAPABLE`, `USAGE_CAPABLE` and
-  `SESSION_ID_CAPABLE`; NOT in `SUBAGENT_CAPABLE` — subagent cards still need the `spawn_subagent`
-  PreToolUse/PostToolUse payload, which nobody has captured. The other four came off the blocked list
+  `CONTEXT_LINK_CAPABLE`, `CHAT_CAPABLE`, `TRANSFER_SOURCE_CAPABLE`, `USAGE_CAPABLE`,
+  `SESSION_ID_CAPABLE` and `SUBAGENT_CAPABLE`. Subagent cards come from grok's native
+  `SubagentStart`/`SubagentStop` hooks, keyed by `subagentId` — measured on 1.0.13 by launching two
+  `explore` children in parallel (same type, different ids; the start's `sessionId` is the PARENT's,
+  the stop's is the CHILD's own and equals `subagentId`, so that is the only id both events share).
+  The spawn tool call is not the card key. The other four came off the blocked list
   in 2026-09, once a machine with a logged-in grok session produced real fixtures: context links and
   the ⌘M panel read `chat_history.jsonl` (NOT `updates.jsonl` — see below), and the meter reads
   `signals.json`. Its hook config is a **directory** (`$GROK_HOME/hooks/*.json`, all merged), so nodeterm
@@ -1700,6 +1703,21 @@ else, and its context links must keep classifying across restarts).
   `last_assistant_message` as the card's result. Remote (SSH) codex nodes get cards but no live
   activity yet (the child rollout is on the host; claude's `remote-subagent-tail` has no codex
   counterpart — follow-up).
+  **Grok** (2026-09) joined via its own native `SubagentStart`/`SubagentStop`, measured on
+  grok 1.0.13 by launching two `explore` children in parallel. Keyed by `subagentId` occupying
+  the same `toolUseId` slot the store already uses (claude correlates by `tool_use_id`,
+  codex by `agent_id`; grok has no tool call behind a subagent). Facts a refactor must not
+  lose: **(1)** the start's `sessionId` is the PARENT's and the stop's is the CHILD's own
+  (equal to `subagentId`) — keying on it files start and stop under different cards and the
+  started one never closes. **(2)** the child's transcript is DERIVED from `subagentId` as
+  `chat_history.jsonl` (`core/grok-subagent-format.ts`); the start's `transcriptPath` is the
+  PARENT's, and even the stop names `updates.jsonl`, which parses to nothing. **(3)** a
+  `session_end` bearing `subagentType` returns early in both raw listeners — without that a
+  child finishing tears down the PARENT's session state. **(4)** `description` arrives only
+  on the start. The four captured payloads live in
+  `src/shared/agents/__fixtures__/grok/hook-payloads.json`, pinned by
+  `normalize.grok.capture.test.ts`. Remote (SSH) grok nodes get cards from the hook but no
+  live tail yet (the child dir is on the host; same gap as codex).
 - **/loop, /schedule & /cron node** (agents in `RECURRING_CAPABLE`) — detected from the **tools**
   the agent invokes (robust; users often phrase it in natural language so the prompt rarely starts
   with the slash): `PreToolUse` for `Skill` (skill ∈ loop/schedule/cron), `CronCreate` (→ cron,

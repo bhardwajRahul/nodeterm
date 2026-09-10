@@ -97,6 +97,33 @@ lane unaffected.
   PR; copy that really is macOS-specific (the ptmx-limit banner, the notch step) is exempt by name
   with its reason. Comments are not scanned.
 
+- **Every loosening of a security gate must be a SETTING the user can see and revoke.** A "don't
+  ask again" that lives only in a dialog is a permission granted once and never findable again. The
+  canvas-control destructive confirm is the pattern to copy (`@shared/control-confirm`): the dialog
+  can grant only an APP-RUN waiver (in-memory — not `settings.json`, not `localStorage`, so
+  quitting restores the gate), the permanent one exists only in Settings where the option says
+  "permanently", a CANCEL never grants anything, and a waived action still announces itself on
+  screen. Which gates may be waived at all is a TABLE, not an `if` at each call site — so "this one
+  can never be waived" is a tested fact rather than a line somebody forgot to write.
+
+- **A permission mode (or anything else) that rides `project.json` is GIT-SHARED — never key a
+  local gate on it alone.** `project.defaultPermissionMode` travels to everyone who clones the
+  repo, so binding a confirmation-skip to "the mode is bypassPermissions" would let a cloned
+  repository silently switch off a user's destructive-action gate. The rule that came out of it:
+  ask `resolvePermissionModeWithSource` WHO chose the value (`project` / `global` / `default`) and
+  act only on the user's own machine-local choice — and keep `default` distinct from `global`,
+  because reading an unset setting as a deliberate choice is reading consent into silence. Anything
+  machine-local goes in `settings.json`; nothing that grants a capability goes in `project.json`.
+
+- **A dialog raised on someone else's behalf must know that request's lifetime.** Main abandons a
+  canvas-control request after 120 s and tells the renderer nothing, so an unanswered dialog sat
+  there forever AND held the one-confirm-at-a-time guard, which refused every later destructive
+  verb with "a confirmation is already pending" for the rest of the app run — the agent, told the
+  refusal was retryable, retried into it in a loop. If you raise a dialog for a bounded request,
+  give it the deadline (`ConfirmState.expiresAt`), import the bound rather than re-typing it, have
+  it expire slightly AFTER the requester gives up, and answer with "expired" — never "denied by
+  user", which claims a decision the human never made.
+
 - **Anything path-shaped: Windows is a delivery target.** Most of this was written on
   macOS/Linux, so the recurring defect is code that is genuinely correct on POSIX —
   `split('/')`, `startsWith('/')` as an is-absolute test, a bare `fs.rename`. Use

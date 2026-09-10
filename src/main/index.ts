@@ -227,6 +227,7 @@ import { initContextLink, setNodeTranscript } from '../core/context-link'
 import { transcriptPathOf } from '../core/context-link-core'
 import { initCanvasControl, installCanvasSkillInto } from './canvas-control'
 import { DRY_RUN_VERBS, dryRunRequested, dryRunRefusal } from '../shared/control-verbs'
+import { CONTROL_REQUEST_TIMEOUT_MS } from '../shared/control-confirm'
 import { initTranscriptIndex, searchTranscripts } from '../core/transcript-index'
 import { initTelemetry } from './telemetry'
 import { initClaudeUsage } from './claude-usage'
@@ -3108,7 +3109,10 @@ app.whenReady().then(async () => {
   // which we forward to the renderer and await a reply. A pending-request map (keyed by a random
   // requestId) bridges the two async hops; both the reply and the timeout below clear the entry.
   // The window is generous because a confirm-gated verb waits on a human, not on the renderer.
-  const CONTROL_REQUEST_TIMEOUT_MS = 120_000
+  // IMPORTED, not declared here: the renderer needs the same number to make an agent-requested
+  // confirm dialog collect itself once this timer has already abandoned the request (main sends
+  // no expiry event), and two copies of the deadline is the drift this repo keeps paying for.
+  // See @shared/control-confirm.
   const pendingControl = new Map<
     string,
     {
@@ -3453,7 +3457,10 @@ app.whenReady().then(async () => {
         // an unanswered dialog treated it as a refusal and gave up.
         resolve({
           ok: false,
-          error: `no answer within ${CONTROL_REQUEST_TIMEOUT_MS / 1000}s — the confirmation dialog may still be open; safe to retry`
+          // The dialog is not left behind any more: it carries the same deadline and dismisses
+          // itself (ConfirmState.expiresAt), which is what stops a retry hitting "a confirmation
+          // is already pending" for the rest of the app run.
+          error: `no answer within ${CONTROL_REQUEST_TIMEOUT_MS / 1000}s — the confirmation dialog has been dismissed; safe to retry`
         })
       }, CONTROL_REQUEST_TIMEOUT_MS)
       pendingControl.set(requestId, { resolve, timer })

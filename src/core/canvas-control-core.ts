@@ -425,9 +425,14 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     '  Renaming to the title the node ALREADY has is a no-op: nothing is typed into its agent',
     '  session, and the reply says `already named`. Re-assert your own name as often as you like.',
     `- \`color --node <id,id> --color C\` — recolor nodes, frames, or stickies. C is one of: ${NODE_COLORS.join(', ')}.`,
-    '- `write --node <id> --text "..."` / `close --node <id>` — type into / close a node.',
+    '- `write --node <id> --text "..."` / `close --node <id,id>` — type into / close nodes.',
+    '  `close` takes a COMMA LIST and asks about the whole list in ONE dialog, so close a finished',
+    '  wave in a single call rather than one call per node. Every id must exist on the canvas: an',
+    '  unknown one refuses the whole request and closes nothing.',
     '  Desktop asks the user to confirm both. `denied by user` is FINAL; `no answer within 120s`',
-    '  means nobody reached the dialog and is worth one retry when the user is back. Server Edition',
+    '  means nobody reached the dialog and is worth one retry when the user is back. The user may',
+    '  have turned the dialog off for a verb, in which case it simply applies — you cannot tell,',
+    '  and nothing changes about how you call it. Server Edition',
     '  is narrower: close requires a node this caller opened during the current server run, and all',
     '  node-mutating verbs accept only current-run creations. Every other target receives a named',
     '  ownership refusal before any partial mutation.',
@@ -921,7 +926,12 @@ Verbs:
   session, and the reply says \`already named\`. Re-assert your own name as often as you like.
 - \`color --node <id,id> --color C\` — recolor nodes, frames, or stickies. C is one of: ${NODE_COLORS.join(', ')}.
 - \`write --node <id> --text "..."\` — type text into a terminal node. (Asks the user to confirm.)
-- \`close --node <id>\` — close a node. Desktop asks the user to confirm. Server Edition closes
+- \`close --node <id,id>\` — close one node or several. \`--node\` takes a COMMA LIST, and the whole
+  list is confirmed in ONE dialog — so when a wave of stations is finished, close them in a single
+  call instead of one call per node (which asked the user once per node, and refused every call
+  after the first while a dialog was still open). Every id must exist on the canvas: an unknown one
+  refuses the whole request and closes NOTHING, naming the ids it could not find. Desktop asks the
+  user to confirm. Server Edition closes
   only nodes this caller opened during the current server run, without a dialog. Its other
   node-mutating verbs (link/group/rename/color/sticky update) likewise accept only current-run
   creations, and refuse the whole request before any partial mutation.
@@ -969,7 +979,12 @@ ${browserGuidanceLines().join('\n')}
 Notes:
 - Desktop \`write\` and \`close\` require the user to approve a confirmation dialog. A
   \`denied by user\` reply is FINAL; \`no answer within 120s\` is worth one retry when the user
-  is back. Server Edition uses the process-local ownership rule for \`close\` instead.
+  is back — the dialog dismisses itself at that point, so the retry is not blocked by it. The user
+  can also turn a verb's dialog off (for the session or permanently), and then the verb just
+  applies: you are never told which of the two happened, and you must not change how you call it —
+  in particular, never re-send a \`denied by user\` request hoping the dialog is off now.
+  \`a confirmation is already pending\` means a dialog for an EARLIER request is open: wait for
+  the user, do not spin. Server Edition uses the process-local ownership rule for \`close\` instead.
 - \`board\` and \`assign\` act on the CURRENTLY OPEN project's board — the same one you see when you
   toggle the kanban view. They need no confirmation.
 - If the CLI says canvas control is unavailable, you are not in a controllable nodeterm session — do not retry.

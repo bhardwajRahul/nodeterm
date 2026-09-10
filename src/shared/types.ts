@@ -5,6 +5,7 @@ import type { CloneProgress } from './clone-url'
 import type { KeybindingOverrides, TerminalShortcutPolicy } from './keybindings'
 import type { NormalizedAgentEvent } from './agents/normalize'
 import type { AgentId, AgentPermissionMode, BuiltinAgentId, PromptInjectionMode } from './agents/config'
+import type { ControlConfirmWaivers } from './control-confirm'
 import type { AgentMessageDeliverRequest, AgentMessageReply } from './agents/agent-messaging'
 import type { BrowserLeasePush } from './browser-indicator'
 import type { GroupWorktree } from './worktree'
@@ -1648,6 +1649,15 @@ export interface Settings {
    *  strands a live session gets their canvas back without downgrading the app. Neither value ever
    *  admits a forged token. */
   hookIdentityStrict?: boolean
+  /** Machine-local waivers for the canvas-control destructive confirm dialog
+   *  (@shared/control-confirm). Absent — and absent from DEFAULT_SETTINGS — means "always ask",
+   *  which is the pre-feature behavior bit for bit.
+   *
+   *  MACHINE-LOCAL BY CONSTRUCTION, and the reason is the trap this closed: a permission mode
+   *  rides `.nodeterm/project.json` and is git-shared, so anything keyed on the mode alone could
+   *  be turned off for a user by a repository they cloned. A waiver is a statement about this
+   *  machine's trust in its own agents, so it lives here and NEVER in a project file. */
+  controlConfirmWaivers?: ControlConfirmWaivers
 }
 
 export const DEFAULT_SETTINGS: Settings = {

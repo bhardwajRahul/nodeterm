@@ -3639,6 +3639,23 @@ app.whenReady().then(async () => {
           codex: settingsStore.get().codexAccounts ?? []
         })
       ),
+    // The phone's Board sheet. Two verbs, both landing in the store's own read-modify-write (which
+    // queues them behind save() and announces the result to the renderer, so the canvas adopts the
+    // change live instead of the next autosave reverting it):
+    //
+    //  - `ensureBoard` seeds the default To Do / In Progress / Done columns on a project that has
+    //    never had a `kanban` block. The desktop writes one only on the user's FIRST board edit
+    //    (the lazy default in `lib/kanban.defaultKanban`), which is invisible there — the canvas
+    //    renders the default either way — but left the phone, which knows a project only by its
+    //    file, with no board to show and so no Board button at all on nearly every project.
+    //  - `setCardColumn` moves one card. The phone could already do this over direct SSH, but only
+    //    for a project whose folder is on THIS machine and only while the whole file still fits in
+    //    one argv string.
+    kanban: {
+      ensureBoard: (projectId: string) => workspaceStore.ensureRemoteBoard(projectId),
+      setCardColumn: (projectId: string, nodeId: string, columnId: string | null) =>
+        workspaceStore.setRemoteCardColumn(projectId, nodeId, columnId)
+    },
     // "End session" from the phone (`pty.destroy`): the SAME two steps the desktop × performs —
     // kill the tmux session on every socket it could live on (the sweep may have seen it on either
     // — see the session-memory panel's kill rule), then take the node off its project's canvas

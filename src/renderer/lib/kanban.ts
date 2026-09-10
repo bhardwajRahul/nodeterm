@@ -1,5 +1,6 @@
 import type { BoardLogAuthor, CanvasNodeState, KanbanAssignment, KanbanCardMeta, KanbanColumn, KanbanLabel, KanbanLabelColor, KanbanPriority, Project, ProjectKanban } from '@shared/types'
 import { NODE_COLORS } from '../state/workspace'
+import { DEFAULT_BOARD_COLUMNS, makeColumnId } from '@shared/kanban-default-board'
 
 // Pure kanban board transforms — the ONLY place board structure changes. The UI computes
 // the next board here and hands it whole to setProjectKanban (no second live source).
@@ -10,14 +11,12 @@ import { NODE_COLORS } from '../state/workspace'
 const kid = (prefix: string): string => `${prefix}-${Math.random().toString(36).slice(2, 10)}`
 
 /** Default board for a project whose file has no `kanban` yet. NOT written to disk
- *  until the first user edit (the spec's lazy-default rule). */
+ *  until the first user edit (the spec's lazy-default rule) — EXCEPT when the phone asks for one
+ *  outright (relay `projects.ensureBoard`), which seeds the same three columns from the same
+ *  shared definition so a board born on either surface is the same board. */
 export function defaultKanban(): ProjectKanban {
   return {
-    columns: [
-      { id: kid('kcol'), title: 'To Do', color: NODE_COLORS[0] },
-      { id: kid('kcol'), title: 'In Progress', color: NODE_COLORS[2] },
-      { id: kid('kcol'), title: 'Done', color: NODE_COLORS[1] }
-    ],
+    columns: DEFAULT_BOARD_COLUMNS.map((c) => ({ id: makeColumnId(), title: c.title, color: c.color })),
     assignments: []
   }
 }

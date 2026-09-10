@@ -3355,7 +3355,26 @@ the Settings section and ShortcutsPanel start disagreeing about what a chord mea
   half-pill itself: (`components/kanban/ColumnPill.tsx`, `columnForNode` in lib/kanban; rendered
   as a SIBLING of the node root — the roots are overflow:hidden — hidden for Ungrouped/dangling,
   click opens the board). Server Edition works as-is (pure renderer + workspace.save). Scope: no
-  agent-driven card movement yet, no board undo, mobile N/A.
+  agent-driven card movement yet, no board undo.
+  **Mobile (nodeterm-ios) reaches the board through two relay verbs**, both landing in
+  `WorkspaceStore.ensureRemoteBoard` / `setRemoteCardColumn` (host-service `handleKanban`; wired in
+  `main/index.ts`'s `hostBridge.kanban`; pure transforms in `core/project-kanban-write.ts`):
+  `projects.ensureBoard` seeds the default columns on a project that has none, `projects.setCardColumn`
+  moves one card. Three things make them necessary rather than convenient. (1) The desktop board is a
+  LAZY default — `kanban` is not written until the user's first board edit — so most project files
+  carry NO board and the phone, which knows a project only by its file, could not offer one
+  (measured: 1 of 13 project files on the author's machine had a `kanban` block). The default columns
+  therefore live in `@shared/kanban-default-board`, read by `defaultKanban()` AND by the core seeder,
+  and copied verbatim (under a pinning test on both sides) by iOS `KanbanDefaults`. (2) An SSH
+  project's file is on a THIRD machine the phone has no credentials for; the verb writes the entry's
+  `cache` and lets the ordinary mirror push it, which is exactly what a desktop card drag does — so
+  it needs nothing new from `reconcileSsh` (that decides by `rev` and unions only `nodes`). Its cache
+  change IS persisted to workspace.json, because for an ssh entry the cache is the local record. (3)
+  The phone's older direct-SSH write inlines the whole project.json into one argv string and so dies
+  at Linux's `MAX_ARG_STRLEN` — this repo's own `.nodeterm/project.json` measured 114,695 bytes,
+  ~15 KB under the 128 KB ceiling. **Both verbs announce their write on `workspaceExternalChange`
+  and that is not optional**: the renderer holds its own board and the next whole-workspace save
+  serializes THAT, so a change the renderer never heard about is one the next autosave reverts.
 - **Omni Kanban (global swimlanes)** (`components/kanban/GlobalKanbanView.tsx`; one swimlane per open project; `state/viewMode.ts` `globalKanban` (localStorage `nodeterm.globalKanban`, machine-local, like `viewByProject`) + `settings.omniKanbanEnabled` (feature gate, default OFF, `settings.json`) / `omniKanbanAsDefault` (when true, `view.kanbanToggle` — Cmd+Shift+B — opens Omni; otherwise per-project; `view.globalKanbanToggle` registry command — unbound, remappable — always opens Omni when enabled); `TabBar` and the menu IPC `onToggleKanban` share one `performKanbanToggle` decision, and `isGlobalKanbanOpen()` is the single gate (fail-closed, static import of `useSettings` — the earlier `require` failed open in the packaged renderer). The active project's lane is derived from serialized `p.nodes` via `toKanbanSessionState` — the persisted-state counterpart to `toKanbanSession` — and is committed (`commitActiveToStore`) before the overlay mounts so live React Flow edits are not stale; `pendingLaunch` never becomes `initialCommand` in the modal (the DAG launch must fire only when dependencies report done, and the canvas `TerminalNode` already delivers `initialCommand` via `writeWhenShellReady` after the `nodeterm:create-node` project switch). Active-project edits (rename / sticky / browser nav) route through Canvas live nodes (`setNodes` + `markDirty`), non-active through the store + `writeDisk`; delete uses `ConfirmDialog` (not `confirm`) and SSH-aware teardown (`transport.destroy` locally vs `sshProject.killSessions` with `everySocket` for a remote owner, plus `agentStatus` / `agentNodes` / `webviewKeepAlive` cleanup). The top bar's project pills and Cmd/Ctrl+1..9 (`nodeterm:swimlane-jump`) jump to the lane; header hint shows the correct mod (`Cmd` on Mac, `Ctrl` elsewhere). Server Edition works as-is, Mobile N/A.
 - **Settings** (`SettingsPage.tsx`, ⚙ / ⌘,): font/cursor (live to xterm + Monaco), default
   shell, grid + snap, **default node size** (`defaultNodeWidth`/`defaultNodeHeight` — new

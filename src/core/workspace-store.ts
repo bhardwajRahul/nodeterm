@@ -6,7 +6,8 @@ import { IPC } from '../shared/ipc'
 import { platform } from './platform'
 import {
   DEFAULT_PROJECT_ID, EMPTY_WORKSPACE,
-  type BridgeLink, type CanvasNodeState, type Project, type Workspace, type WorkspaceV1
+  type BridgeLink, type CanvasNodeState, type KanbanColumn, type Project, type Workspace,
+  type WorkspaceV1
 } from '../shared/types'
 import {
   PROJECT_DIR, PROJECT_FILE, fileToProject, inlineProjectFileRelPath, isInlineProjectFileId,
@@ -27,6 +28,7 @@ import type { CapabilityAckMap } from './project-capability-consent'
 import { hoistLegacyNodeExec, type LocalNodeExecMap } from '../shared/node-exec'
 import { collisionSeed, derivedProjectId, freshProjectId } from '../shared/project-id'
 import { appendProjectNode, removeProjectNode, type RemoteNodeInput } from './project-node-append'
+import { ensureProjectBoard, setProjectCardColumn } from './project-kanban-write'
 
 /** Checked remote read: `absent` (no file — safe to push our cache) is NOT `error` (connection
  *  down / ssh failure — a failed read is never evidence of absence, so nothing may be pushed). */
@@ -781,14 +783,18 @@ export class WorkspaceStore {
    *  index write, so it can neither interleave with a save's own rewrite nor invent entries: it
    *  persists exactly what `this.index` already holds (and does nothing before the first load). */
   private persistIndexNow(): Promise<void> {
-    const run = this.saveChain.then(async () => {
-      const index = this.index
-      if (!index) return
-      this.applySettingsToIndex(index)
-      await writeAtomic(this.indexPath, JSON.stringify(index))
-    })
+    const run = this.saveChain.then(() => this.writeIndexNow())
     this.saveChain = run.catch(() => {})
     return run
+  }
+
+  /** The index write itself, WITHOUT queueing — for callers that are already running on
+   *  `saveChain` (queueing from inside a chain step would wait on the step itself). */
+  private async writeIndexNow(): Promise<void> {
+    const index = this.index
+    if (!index) return
+    this.applySettingsToIndex(index)
+    await writeAtomic(this.indexPath, JSON.stringify(index))
   }
 
   /**
@@ -1656,6 +1662,182 @@ export class WorkspaceStore {
       return true
     }
     return false
+  }
+
+  /**
+   * Give a project a kanban board if it has none — the host side of the relay
+   * `projects.ensureBoard` verb, i.e. the phone tapping "Board" on a project that has never had
+   * one. Returns the board's columns (the ones it just seeded, or the ones already there), or null
+   * when this project cannot have a board written at all.
+   *
+   * **Why the phone needs a verb for this at all.** The desktop's board is a LAZY default: the
+   * canvas renders `kanban ?? defaultKanban()` and the `kanban` block is not written to the file
+   * until the user's first board edit. So on a fresh project the columns exist only in the
+   * renderer's memory — and the phone, which knows a project solely by its `.nodeterm/project.json`,
+   * saw a project with no board and could not offer one. (Measured on the author's own machine:
+   * 1 of 13 project files had a `kanban` block.) Seeding the SAME three columns from the SAME
+   * shared definition (`@shared/kanban-default-board`) is what makes a board created on the phone
+   * and a board created on the desktop the same board.
+   *
+   * IDEMPOTENT, and that is the safety property: an existing board is returned untouched and
+   * nothing is written, so the phone may ask on every tap.
+   */
+  ensureRemoteBoard(projectId: string, now = new Date()): Promise<KanbanColumn[] | null> {
+    const run = this.saveChain.then(() =>
+      this.kanbanWriteNow(projectId, (raw) => ensureProjectBoard(raw, now))
+    )
+    this.saveChain = run.catch(() => {})
+    // The board that is THERE NOW, whether this call seeded it or found it. `ensureProjectBoard`
+    // returns null for BOTH "already has one" and "this board is not a shape I may replace", so the
+    // answer comes off the file rather than off whether a write happened — a project with a
+    // board is a project with a board, and the phone asks this on every Board tap.
+    return run.then((res) => (res ? (res.file.kanban?.columns ?? null) : null))
+  }
+
+  /**
+   * Move one session card to a board column (`columnId: null` = the virtual Ungrouped column) — the
+   * host side of the relay `projects.setCardColumn` verb.
+   *
+   * The phone has been able to do this over DIRECT SSH since the board shipped, by rewriting the
+   * whole project.json itself. That path has two holes this verb closes: it cannot reach an SSH
+   * project (whose file lives on a third machine), and it carries the entire file in one argv
+   * string, so it stops working — silently — once the file passes Linux's 128 KB `MAX_ARG_STRLEN`
+   * (the author's own `nodeterm` project file measured 114,695 bytes, ~15 KB under the ceiling).
+   * Over this verb the phone sends `{projectId, nodeId, columnId}` and the size of the canvas is
+   * irrelevant.
+   *
+   * False = nothing was written, and the caller says so out loud rather than pretending: the
+   * project is unknown or has no writable file, the file is not the shape we know, the column does
+   * not exist on this board, or the card is already there (a retry — see `setProjectCardColumn`).
+   */
+  setRemoteCardColumn(
+    projectId: string,
+    nodeId: string,
+    columnId: string | null,
+    now = new Date()
+  ): Promise<boolean> {
+    const run = this.saveChain.then(() =>
+      this.kanbanWriteNow(projectId, (raw) => setProjectCardColumn(raw, nodeId, columnId, now))
+    )
+    this.saveChain = run.catch(() => {})
+    return run.then((res) => res?.written === true)
+  }
+
+  /**
+   * The one read-modify-write behind both kanban verbs, for BOTH kinds of ref project.
+   *
+   * Queued on `saveChain` by its callers for the same reason `appendRemoteNode` is: this rewrites
+   * the very file a save rewrites whole, and off the chain a save that read the file first lands
+   * last and un-writes the move the phone was told had landed.
+   *
+   * - **local ref** (`cwd`): read the file, transform, write it atomically — exactly
+   *   `appendRemoteNodeNow`'s shape, including recording the write in `lastWritten` and announcing
+   *   it on `workspaceExternalChange` rather than letting the watcher discover our own edit.
+   * - **ssh ref** (`ssh` + `cache`): the file is on ANOTHER machine and only this desktop writes
+   *   it. So the write goes where the desktop's own board edits go — into `e.cache` — and is then
+   *   pushed by the ordinary mirror (`mirrorSshCache`, which re-reads and rescues the server's own
+   *   node additions first). This is why extending the phone's reach to SSH projects does not need
+   *   any new reconciliation: `reconcileSsh` decides between cache and server by `rev` and unions
+   *   only `nodes`, and this produces exactly the cache-side, rev-bumped change a desktop card drag
+   *   produces. What it must NOT skip is the broadcast: the renderer holds its own copy of the
+   *   board and the next whole-workspace save serializes THAT, so a change the renderer never heard
+   *   about is a change the next autosave reverts.
+   *
+   * Returns null when there was no readable project file to work on at all. Otherwise it returns
+   * the file as it now stands together with whether this call CHANGED it — the two are different
+   * answers and both callers need the difference: a refused move is `written: false` (the phone
+   * says so out loud), while a board that was already there is `written: false` with the board
+   * right there in `file` (nothing to do, and the honest answer is the board).
+   */
+  private async kanbanWriteNow(
+    projectId: string,
+    transform: (raw: string) => string | null
+  ): Promise<{ file: ProjectFileV1; written: boolean } | null> {
+    const e = this.index?.entries.find((x) => x.id === projectId)
+    if (!e) return null
+
+    if (e.ssh && e.cache) {
+      const updated = transform(serializeProjectFile(e.cache))
+      if (updated === null) return { file: e.cache, written: false }
+      let parsed: ProjectFileV1
+      try {
+        parsed = JSON.parse(updated) as ProjectFileV1
+      } catch {
+        return { file: e.cache, written: false }
+      }
+      e.cache = parsed
+      this.revs.set(e.id, parsed.rev)
+      // Owed BEFORE the push, so a mirror that fails (the host is asleep, the dial flaps) is
+      // retried by the next save instead of being lost with the answer already given.
+      this.unmirrored.add(e.id)
+      // The ssh cache IS the local copy of that file — it lives in workspace.json, not on this
+      // machine's disk as a project.json — so an unpersisted cache change is one an app restart
+      // loses even though the server already has it. (The local branch below needs no equivalent:
+      // its project.json is the record.)
+      await this.writeIndexNow().catch(() => {})
+      this.announceProjectFile(e, parsed)
+      await this.mirrorSshCache(e)
+      return { file: parsed, written: true }
+    }
+
+    if (!e.cwd) return null
+    const file = projectFilePath(e.cwd)
+    let raw: string
+    try {
+      raw = await fs.readFile(file, 'utf-8')
+    } catch {
+      return null
+    }
+    const current = (): { file: ProjectFileV1; written: boolean } | null => {
+      try {
+        return { file: JSON.parse(raw) as ProjectFileV1, written: false }
+      } catch {
+        return null // unparsable: there is no board to report and none was written
+      }
+    }
+    const updated = transform(raw)
+    if (updated === null) return current()
+    try {
+      await writeAtomic(file, updated)
+    } catch {
+      return current()
+    }
+    this.lastWritten.set(file, updated)
+    let parsed: ProjectFileV1
+    try {
+      parsed = JSON.parse(updated) as ProjectFileV1
+    } catch {
+      // The transforms only ever return a string they serialized themselves, so this cannot
+      // realistically happen — but the write DID land, and reporting it as a failure would have
+      // the phone tell the user their move was refused while the file says otherwise.
+      return { file: { version: 1, rev: 0, savedAt: '', name: e.name, color: e.color, nodes: [] }, written: true }
+    }
+    this.revs.set(e.id, parsed.rev)
+    this.announceProjectFile(e, parsed)
+    return { file: parsed, written: true }
+  }
+
+  /** Tell the renderer about a project file THIS store just rewrote outside of `save()`. Shared by
+   *  the kanban verbs; the same payload `appendRemoteNode`/`removeRemoteNode` build by hand. */
+  private announceProjectFile(e: IndexEntryV3, file: ProjectFileV1): void {
+    try {
+      platform().broadcast(
+        IPC.workspaceExternalChange,
+        fileToProject(file, {
+          id: e.id,
+          cwd: e.cwd,
+          ssh: e.ssh,
+          closed: e.closed,
+          closedAt: e.closedAt,
+          viewport: e.viewport,
+          defaultAccountId: e.defaultAccountId,
+          breadcrumbs: e.breadcrumbs,
+          closedSessions: e.closedSessions,
+          capabilityAck: e.capabilityAck,
+          localExec: e.localExec
+        })
+      )
+    } catch { /* the file is written and cached; the next load/poll surfaces the change */ }
   }
 
   /**

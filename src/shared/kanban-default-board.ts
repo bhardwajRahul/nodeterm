@@ -13,7 +13,7 @@
  * every later reader addresses columns by the ids that board carries — so two surfaces agreeing on
  * an id would buy nothing and a fixed id would collide across projects.
  */
-import { NODE_COLORS } from './node-colors'
+import { SYSTEM_NODE_COLORS } from './node-colors'
 
 export interface DefaultBoardColumn {
   title: string
@@ -22,9 +22,9 @@ export interface DefaultBoardColumn {
 
 /** The three starting columns, in board order. */
 export const DEFAULT_BOARD_COLUMNS: readonly DefaultBoardColumn[] = [
-  { title: 'To Do', color: NODE_COLORS[0] },
-  { title: 'In Progress', color: NODE_COLORS[2] },
-  { title: 'Done', color: NODE_COLORS[1] }
+  { title: 'To Do', color: SYSTEM_NODE_COLORS[0] },
+  { title: 'In Progress', color: SYSTEM_NODE_COLORS[2] },
+  { title: 'Done', color: SYSTEM_NODE_COLORS[1] }
 ] as const
 
 /**

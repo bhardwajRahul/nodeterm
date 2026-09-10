@@ -171,7 +171,8 @@ import { useWorktrees } from '../state/worktrees'
 import { isRemoteSessionNode } from '@shared/worktree'
 import { useSession, useActiveSessionPresence } from '../session/session'
 import { isBrowserRuntime } from '../bridge/runtime'
-import { agentLaunchOverride, COLLAPSED_HEIGHT, NODE_COLORS, type CanvasNode } from '../state/workspace'
+import { agentLaunchOverride, COLLAPSED_HEIGHT, type CanvasNode } from '../state/workspace'
+import { NodeColorSwatches } from '../components/NodeColorSwatches'
 import { AccountChip, useAccountChip } from '../components/AccountChip'
 import { effectiveAccountId } from '../lib/accountChip'
 import {
@@ -5031,18 +5032,14 @@ export function TerminalNode({
           />
         </Tooltip>
         {showColors && (
-          <div className="color-popover">
-            {NODE_COLORS.map((c) => (
-              <button
-                key={c}
-                style={{ background: c }}
-                onClick={() => {
-                  updateNodeData(id, { color: c })
-                  setShowColors(false)
-                }}
-              />
-            ))}
-          </div>
+          <NodeColorSwatches
+            className="color-popover"
+            selected={data.color as string | undefined}
+            onPick={(c) => {
+              updateNodeData(id, { color: c })
+              setShowColors(false)
+            }}
+          />
         )}
         {data.icon ? (
           <button

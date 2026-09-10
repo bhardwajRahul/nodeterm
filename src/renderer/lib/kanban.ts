@@ -1,5 +1,5 @@
 import type { BoardLogAuthor, CanvasNodeState, KanbanAssignment, KanbanCardMeta, KanbanColumn, KanbanLabel, KanbanLabelColor, KanbanPriority, Project, ProjectKanban } from '@shared/types'
-import { NODE_COLORS } from '../state/workspace'
+import { SYSTEM_NODE_COLORS } from '../state/workspace'
 import { DEFAULT_BOARD_COLUMNS, makeColumnId } from '@shared/kanban-default-board'
 
 // Pure kanban board transforms — the ONLY place board structure changes. The UI computes
@@ -23,7 +23,7 @@ export function defaultKanban(): ProjectKanban {
 
 /** Color for the next added column — cycles the node palette. */
 export function nextColumnColor(k: ProjectKanban): string {
-  return NODE_COLORS[k.columns.length % NODE_COLORS.length]
+  return SYSTEM_NODE_COLORS[k.columns.length % SYSTEM_NODE_COLORS.length]
 }
 
 export function addColumn(k: ProjectKanban, title: string, color: string): ProjectKanban {

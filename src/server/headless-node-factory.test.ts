@@ -730,6 +730,21 @@ describe('HeadlessNodeFactory', () => {
     expect(projectFile.nodes.find((node) => node.id === 'sticky-color')?.color).toBe('#32d74b')
   })
 
+  it('accepts a palette NAME and a mixed-case hex, persisting the canonical value', async () => {
+    // Complaint (1): `--color '#d97757'` — the colour a Claude node is BORN with — used to be
+    // refused by the boundary. It is in the palette now, and so is its name.
+    await expect(factory.color('term-source', {
+      node: 'term-upstream',
+      color: 'claude'
+    })).resolves.toMatchObject({ ok: true, result: { color: '#d97757' } })
+    await expect(factory.color('term-source', {
+      node: 'term-upstream',
+      color: '#0A84FF'
+    })).resolves.toMatchObject({ ok: true, result: { color: '#0a84ff' } })
+    const project = (await store.load({ sideline: false })).projects[0]
+    expect(project.nodes.find((node) => node.id === 'term-upstream')?.color).toBe('#0a84ff')
+  })
+
   it('refuses invalid group and recolor values by name without persistence or fanout', async () => {
     await expect(factory.group('term-source', {
       nodes: 'term-upstream,term-owned',

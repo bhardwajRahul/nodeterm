@@ -3,7 +3,8 @@ import { Tooltip } from '../components/Tooltip'
 import { IconClose, IconUngroup } from '../components/icons'
 import { NodeResizer, useReactFlow, type NodeProps } from '@xyflow/react'
 import { NODE_MIN_SIZES } from '../lib/nodeSizing'
-import { NODE_COLORS, ungroupNodes, type CanvasNode } from '../state/workspace'
+import { ungroupNodes, type CanvasNode } from '../state/workspace'
+import { NodeColorSwatches } from '../components/NodeColorSwatches'
 import { useProjects } from '../state/projects'
 import { useWorktrees, WORKTREE_STATUS_POLL_MS } from '../state/worktrees'
 import { useProjectSetup } from '../state/projectSetup'
@@ -175,18 +176,14 @@ export function GroupNode({ id, data, selected }: NodeProps<CanvasNode>) {
           />
         </Tooltip>
         {showColors && (
-          <div className="color-popover">
-            {NODE_COLORS.map((c) => (
-              <button
-                key={c}
-                style={{ background: c }}
-                onClick={() => {
-                  updateNodeData(id, { color: c })
-                  setShowColors(false)
-                }}
-              />
-            ))}
-          </div>
+          <NodeColorSwatches
+            className="color-popover"
+            selected={data.color as string | undefined}
+            onPick={(c) => {
+              updateNodeData(id, { color: c })
+              setShowColors(false)
+            }}
+          />
         )}
         <input
           className="group-node__name nodrag"

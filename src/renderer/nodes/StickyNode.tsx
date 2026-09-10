@@ -3,7 +3,8 @@ import { Tooltip } from '../components/Tooltip'
 import { IconChevronDown, IconChevronRight, IconClose } from '../components/icons'
 import { Handle, NodeResizer, Position, useReactFlow, type NodeProps } from '@xyflow/react'
 import { NODE_MIN_SIZES } from '../lib/nodeSizing'
-import { COLLAPSED_HEIGHT, NODE_COLORS, type CanvasNode } from '../state/workspace'
+import { COLLAPSED_HEIGHT, type CanvasNode } from '../state/workspace'
+import { NodeColorSwatches } from '../components/NodeColorSwatches'
 import { ColumnPill } from '../components/kanban/ColumnPill'
 import { NoteMarkdown } from '../components/NoteMarkdown'
 import { relativeTime } from '../lib/relativeTime'
@@ -108,18 +109,14 @@ export function StickyNode({ id, data, selected }: NodeProps<CanvasNode>) {
           />
         </Tooltip>
         {showColors && (
-          <div className="color-popover">
-            {NODE_COLORS.map((c) => (
-              <button
-                key={c}
-                style={{ background: c }}
-                onClick={() => {
-                  updateNodeData(id, { color: c })
-                  setShowColors(false)
-                }}
-              />
-            ))}
-          </div>
+          <NodeColorSwatches
+            className="color-popover"
+            selected={data.color as string | undefined}
+            onPick={(c) => {
+              updateNodeData(id, { color: c })
+              setShowColors(false)
+            }}
+          />
         )}
         {editingTitle ? (
           <input

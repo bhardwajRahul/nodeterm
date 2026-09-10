@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { IconClose } from '../../icons'
 import type { ClaudeAccount, ClaudeSkillShareResult } from '@shared/types'
 import type { CodexAccount } from '@shared/codex-account'
@@ -8,7 +8,8 @@ import { useAgentStatus } from '../../../state/agentStatus'
 import { useSettings } from '../../../state/settings'
 import { useSystemAccount } from '../../../state/systemAccount'
 import { useSystemCodexAccount } from '../../../state/systemCodexAccount'
-import { isAccountLoginNode, NODE_COLORS } from '../../../state/workspace'
+import { isAccountLoginNode } from '../../../state/workspace'
+import { NODE_COLOR_SECTIONS } from '@shared/node-colors'
 import { useProjects } from '../../../state/projects'
 import { useSshConn } from '../../../state/sshConn'
 import { useSshServers } from '../../../state/sshServers'
@@ -170,21 +171,33 @@ function AccountColorSwatches({
       >
         ✕
       </button>
-      {NODE_COLORS.map((c) => (
-        <button
-          key={c}
-          type="button"
-          // "<what> <hex>", the convention the Appearance accent picker set — a bare hex is not a
-          // name a screen reader can do anything with.
-          aria-label={`Node color ${c}`}
-          aria-pressed={color === c}
-          onClick={() => onPick(c)}
-          style={{ background: c }}
-          className={cn(
-            'size-5 rounded-full border-2',
-            color === c ? 'border-text' : 'border-transparent'
-          )}
-        />
+      {NODE_COLOR_SECTIONS.map((section, i) => (
+        <Fragment key={section.label}>
+          {/* The agent section is headed so a user can tell WHICH circle is Claude's — the whole
+              point of putting the brand colors in the palette. The first section keeps its
+              historical bare row. */}
+          {i > 0 ? (
+            <span className="text-[11px] text-muted">{section.label}</span>
+          ) : null}
+          {section.swatches.map((swatch) => (
+            <button
+              key={swatch.value}
+              type="button"
+              // "<what> <name>", the convention the Appearance accent picker set — a bare hex is
+              // not a name a screen reader can do anything with, which is also why the palette
+              // now carries labels rather than only values.
+              aria-label={`Node color ${swatch.label}`}
+              title={swatch.label}
+              aria-pressed={color === swatch.value}
+              onClick={() => onPick(swatch.value)}
+              style={{ background: swatch.value }}
+              className={cn(
+                'size-5 rounded-full border-2',
+                color === swatch.value ? 'border-text' : 'border-transparent'
+              )}
+            />
+          ))}
+        </Fragment>
       ))}
     </div>
   )

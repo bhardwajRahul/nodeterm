@@ -97,6 +97,16 @@ lane unaffected.
   PR; copy that really is macOS-specific (the ptmx-limit banner, the notch step) is exempt by name
   with its reason. Comments are not scanned.
 
+- **The node colour palette is ONE list, and it is also the control boundary.**
+  `src/shared/node-colors.ts` is what every picker draws and what `nodeterm color --color C`
+  validates against — so a colour the UI offers and a colour the CLI accepts cannot drift apart.
+  Its agent section is DERIVED from `AGENT_CONFIG`, never re-typed: add a builtin agent and the
+  palette grows by itself. If you are adding a surface that lets someone choose a node colour,
+  render `<NodeColorSwatches>` rather than mapping the array yourself (a guard test fails on a
+  hand-rolled swatch row) — and if the value will be drawn as TEXT or as an opaque fill under
+  white, take `SYSTEM_NODE_COLOR_SWATCHES` instead, with the contrast reason in a comment. Deep
+  version, including the measured numbers: CLAUDE.md § Node colors.
+
 - **Every loosening of a security gate must be a SETTING the user can see and revoke.** A "don't
   ask again" that lives only in a dialog is a permission granted once and never findable again. The
   canvas-control destructive confirm is the pattern to copy (`@shared/control-confirm`): the dialog

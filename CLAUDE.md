@@ -3190,6 +3190,23 @@ the Settings section and ShortcutsPanel start disagreeing about what a chord mea
   losing the centre. The free-rect solve (`solveFitFrame` / `solveFitPadding`) stays where it earns
   its keep: `fitAll`, which fits EVERY node and would otherwise tuck them under the dock.
   Unknowable size or no pane ⇒ the camera **stands still**.
+  **ONE exception, and it is not a walk-back of that rule (issue #743): a MAXIMIZED node**
+  (`isMaximized` — `data.premaxRect`, the flag `maximizeNodeToRect` writes and
+  `restoreMaximizedNode` clears) is framed against the same rectangle `maximizeTargetRect` placed
+  it in, by passing `measurePinnedInsets(box)` to `viewportForRect`. The trade-off above rests on
+  ONE number — how much of the node ends up behind the panel — and for a maximized node that
+  number is set by the PANEL rather than the node, **by construction**: maximize sized it to be
+  *exactly* the free area, so centring it in the wider pane buries half the inset less the margin.
+  Measured by the reporter on a signed v0.3.5 build with the sidebar pinned: an ordinary node lost
+  33px, the maximized one 137px, and the camera drifted by `322 / 2 = 161` px on every "go to
+  another node and back". Because the node is that rectangle minus two margins, centring it in the
+  free area reproduces maximize's own origin (`marginPx + insets.left`) exactly — which is what
+  makes this a fix rather than a second opinion about placement. It applies to BOTH zoom branches
+  (the rectangle question is the same one; splitting it would be two rectangles again, which is
+  the bug), and with no pinned panel `insets` is zero and the whole thing is a mathematical no-op.
+  A pane narrower than the panels over it falls back to the whole pane rather than solving against
+  a negative width. `measurePinnedInsets` reads the DOM, so it is asked only for a node that can
+  use the answer.
   `settings.focusZoomToNode` (Behavior, default ON) is the escape hatch for the rescale: off, the
   camera keeps the zoom `getZoom()` reports and only pans, and that zoom is passed through
   **unclamped** — it is one the canvas is already displaying, and re-clamping it to the framing

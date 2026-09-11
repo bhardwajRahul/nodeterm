@@ -6102,6 +6102,12 @@ button.group-node__setup:disabled {
   color: #d6d6d6;
   white-space: pre-wrap;
   word-break: break-word;
+  /* The transcript is TEXT, not a terminal emulator: drag-select + copy must work (the node
+     root's canvas-drag suppression must not swallow it — keep `nowheel` for scroll, but the
+     selection below is what makes the content usable). */
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
 }
 
 .subagent-node__head {

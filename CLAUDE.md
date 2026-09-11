@@ -1584,6 +1584,30 @@ else, and its context links must keep classifying across restarts).
   remote installers at once; a second repair mechanism would be exactly the duplicated rule this
   file warns about. It strips only OUR handler out of a definition, so a hook a user hand-merged
   beside ours survives.
+- **A reused ControlMaster is not evidence of a live hook tunnel** (issue #735 — remote sessions
+  stuck on **Unknown**, no completion notifications, no unread dots). `connect()`'s reuse branch
+  returned the cached `hookEndpointPath` whenever `ssh -O check` answered, on the written-down
+  assumption that *"a master that answered `-O check` never lost its tunnel"*. That is false, and
+  the mechanism is **our own self-heal**: `childArgs` uses `ControlMaster=auto` + `ControlPersist`
+  precisely so a dead master is rebuilt by the next child command (a status poll, a mirror push, a
+  remote git call) on the same ControlPath. The rebuilt master answers `-O check` — and carries no
+  `-R`, because `RemoteHooks.setup()` is the only caller of `hookForwardArgs` and it runs only on
+  the branch where a master has just come up. The 45 s watchdog then parks on the reuse branch
+  forever. Nothing reports it: the project says `connected`, terminals work, the mirror pushes, and
+  only the hook POSTs die — into a socket file that still EXISTS with nobody listening.
+  **MEASURED on the host that prompted the fix**: 10 per-project hook sockets on disk, exactly ONE
+  with a listener (`ss -lxp`); the dead project's socket answered `curl` exit 7 while that same
+  project's status mirror was being written the same second; **107 of 128** live `nodeterm-rmt`
+  tmux sessions were pinned to that dead endpoint. Sessions are pinned for life
+  (`new-session -A -e …` — tmux ignores `-e` on an existing session), so every one of them stayed
+  dark until the app restarted. The reuse branch now probes the tunnel (`RemoteHooks.tunnelAlive`,
+  one `curl` over the already-multiplexed master) and re-runs the idempotent `setup()` when it does
+  not answer, firing `onTunnelVerified` so the working agents resync. **The retry is backed off**
+  (`tunnel-repair.ts`, pure + tested): the FIRST failure repairs immediately — that is the common
+  case — while a host that can never forward (`AllowStreamLocalForwarding no`, no `curl`, a `$HOME`
+  the validator refuses) settles at one attempt per 15 minutes instead of rewriting every agent's
+  hook config every 45 s. A missing spec answers "not alive" rather than "unknown": nothing of ours
+  is bound, which is a tunnel that cannot deliver.
 - **Per-node hook identity** (`src/core/agents/node-auth-*.ts`, `node-token-*.ts`,
   `node-identity-policy.ts` — full write-up in **`docs/node-identity.md`**) — the shared bearer proves
   "a session on this machine", never *which* session, so every node also gets a capability derived

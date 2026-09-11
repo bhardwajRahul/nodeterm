@@ -3533,6 +3533,30 @@ the Settings section and ShortcutsPanel start disagreeing about what a chord mea
 - **Shortcuts** (`ShortcutsPanel.tsx`, ? / ⌘/): shown once on first launch (`seenShortcuts`).
   **Derived from the registry, never hand-listed** — see the Keybindings invariant below.
 - **Welcome** (`WelcomeScreen.tsx`): shown when no projects exist.
+- **Nothing raises the window without a user action** (issue #737, the THIRD in this family —
+  #665 and #702 were canvas-control moving the user's VIEW; this one is the OS window activating
+  over another app). The cause was `win.on('ready-to-show', () => win.show())`: `ready-to-show`
+  fires on the first paint of EVERY main-frame navigation, not once per window (MEASURED on
+  Electron 42.9.1 — a `webContents.reload()` on a VISIBLE window emits it again with `isVisible()`
+  already true), and the crash auto-reload (`render-process-gone` → `webContents.reload()`) is an
+  unattended navigation. So a backgrounded renderer being killed — macOS jetsam on a machine
+  running several agent CLIs at 335 MB–1.2 GB each — silently raised nodeterm over whatever the
+  user had ⌘Tabbed to. It is `win.once` now. **The gate must be FIRST PAINT, not `isVisible()`**:
+  after macOS hide-on-close the window is hidden but alive, and an `isVisible()` gate would `show()`
+  it on a background reload — the same bug inverted.
+  The permitted raises are all a CLICK, and they are enumerated with their triggering action in
+  **`src/main/window-raise.guard.test.ts`**, an allowlist-with-reasons in the shape of
+  `fs-atomic.guard.test.ts`: a notification tap (the one exception the rule names), a Notch HUD
+  row, a Dock activate, a second launch, and a file dropped onto a terminal. Nothing an AGENT can
+  do reaches any of them — canvas control, trigger nodes, hook POSTs, relay/pairing/push and
+  browser-drive contain no show/focus/dialog call, and agent confirms are in-renderer
+  `ConfirmDialog`s, never native. The drop IPC's `app.focus({steal:true})` is the only
+  renderer-reachable cross-app activation and now carries the same sender guard its two neighbours
+  (`uiShortcutRecording`, `uiTerminalFocus`) already had — a `<webview>` guest is a webContents in
+  this process. **KNOWN GAP, listed in the guard rather than fixed**: `standing-host.ts`'s
+  `dialog.showErrorBox` for a locked keyring is app-modal, unparented, and raised from the relay
+  RECONNECT TIMER; the honest fix routes it to a non-modal in-app surface and owes a macOS check
+  that a sheet on a background window does not activate.
 - **Window chrome**: macOS integrated title bar (`titleBarStyle: 'hiddenInset'`); the tab
   bar (`TabBar.tsx`) is the drag region with the `nodeterm` logo + a rounded pill of project
   tabs. The New-project `+` is a **sibling** of `.tabbar__tabs`, not its last child — inside

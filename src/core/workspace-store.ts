@@ -27,6 +27,11 @@ import { readProjectCapabilities, type ProjectCapability } from '../shared/proje
 import type { CapabilityAckMap } from './project-capability-consent'
 import { hoistLegacyNodeExec, type LocalNodeExecMap } from '../shared/node-exec'
 import { collisionSeed, derivedProjectId, freshProjectId } from '../shared/project-id'
+import {
+  pruneLayoutViewports,
+  sanitizeLayoutViewports,
+  sanitizeLayouts
+} from '../shared/canvas-layout'
 import { appendProjectNode, removeProjectNode, type RemoteNodeInput } from './project-node-append'
 import { ensureProjectBoard, setProjectCardColumn } from './project-kanban-write'
 
@@ -294,6 +299,11 @@ export class WorkspaceStore {
       // re-normalize each snapshot's trigger spec. Sanitized ONCE here so every downstream reader
       // of `e.closedSessions` (fileToProject, readLocalRef, the ssh reconcile paths) can trust it.
       entry.closedSessions = sanitizeLoadedClosedSessions(entry.closedSessions)
+      // Same rule for this machine's per-layout cameras: workspace.json is hand-editable input,
+      // and a non-finite `zoom` reaching `setViewport` blanks the canvas. Pruning against the live
+      // layouts happens later, in `fileToProject`, which is the first point that knows what the
+      // project file actually carries.
+      entry.layoutViewports = sanitizeLayoutViewports(entry.layoutViewports)
     }
     this.index = index
     const built: LoadedEntry[] = []
@@ -310,8 +320,13 @@ export class WorkspaceStore {
         // same kanban shape guard here — a v1/hand-edited board would otherwise crash the render —
         // and the same trigger shape rule (workspace.json is hand-editable input too).
         // `rest` drops BOTH guarded fields; each is added back below only if it passes its guard.
-        const { kanban, closedSessions, ...rest } = e.project
+        const { kanban, closedSessions, layouts, layoutViewports, ...rest } = e.project
         const base = validKanban(kanban) ? { ...rest, kanban } : rest
+        // An inline project's embedded layouts are hand-editable input exactly like a git-shared
+        // file's, and they never pass through `fileToProject` on this branch, so they are
+        // sanitized (and their cameras pruned against them) here instead.
+        const admitted = sanitizeLayouts(layouts)
+        const views = pruneLayoutViewports(sanitizeLayoutViewports(layoutViewports), admitted)
         // Same treatment for `closedSessions` as the ref'd-project entries above, and for the
         // same reason: a malformed value here reaches `mergeClosedHistory`, which iterates it (a
         // non-array throws and takes the whole sidebar render down) and hands each entry's node
@@ -322,7 +337,9 @@ export class WorkspaceStore {
           project: {
             ...base,
             nodes: sanitizeNodeTriggers(base.nodes),
-            ...(history ? { closedSessions: history } : {})
+            ...(history ? { closedSessions: history } : {}),
+            ...(admitted ? { layouts: admitted } : {}),
+            ...(views ? { layoutViewports: views } : {})
           }
         })
       } else if (e.cwd) {
@@ -347,6 +364,7 @@ export class WorkspaceStore {
               defaultAccountId: e.defaultAccountId,
               breadcrumbs: e.breadcrumbs,
               closedSessions: e.closedSessions,
+              layoutViewports: e.layoutViewports,
               capabilityAck: e.capabilityAck,
               localExec: this.execOverlay(e, p)
             })
@@ -369,6 +387,7 @@ export class WorkspaceStore {
               defaultAccountId: e.defaultAccountId,
               breadcrumbs: e.breadcrumbs,
               closedSessions: e.closedSessions,
+              layoutViewports: e.layoutViewports,
               capabilityAck: e.capabilityAck,
               localExec: this.execOverlay(e, e.cache)
             })
@@ -858,6 +877,7 @@ export class WorkspaceStore {
       defaultAccountId: e.defaultAccountId,
       breadcrumbs: e.breadcrumbs,
       closedSessions: e.closedSessions,
+      layoutViewports: e.layoutViewports,
       capabilityAck: e.capabilityAck,
       localExec: this.execOverlay(e, read.file)
     })
@@ -978,6 +998,10 @@ export class WorkspaceStore {
         // deleted), so without this an unavailable window would silently forget the user's trash
         // can the moment splitWorkspace rebuilds the index.
         if (old?.closedSessions) e.closedSessions = old.closedSessions
+        // Same rule again: a placeholder carries no layouts, so `splitWorkspace` pruned its
+        // cameras away against an empty list. Restoring them keeps the user's per-layout camera
+        // for when the ref becomes readable again.
+        if (old?.layoutViewports) e.layoutViewports = old.layoutViewports
         // The clone-notice acknowledgment must also survive an unavailable window: forgetting it
         // would re-raise a notice the user already answered the moment the folder remounts.
         if (old?.capabilityAck) e.capabilityAck = old.capabilityAck
@@ -1233,6 +1257,7 @@ export class WorkspaceStore {
       defaultAccountId: e.defaultAccountId,
       breadcrumbs: e.breadcrumbs,
       closedSessions: e.closedSessions,
+      layoutViewports: e.layoutViewports,
       capabilityAck: e.capabilityAck,
       localExec: e.localExec
     })
@@ -1596,6 +1621,7 @@ export class WorkspaceStore {
           defaultAccountId: e.defaultAccountId,
           breadcrumbs: e.breadcrumbs,
           closedSessions: e.closedSessions,
+          layoutViewports: e.layoutViewports,
           capabilityAck: e.capabilityAck,
           localExec: e.localExec
         })
@@ -1654,6 +1680,7 @@ export class WorkspaceStore {
             defaultAccountId: e.defaultAccountId,
             breadcrumbs: e.breadcrumbs,
             closedSessions: e.closedSessions,
+            layoutViewports: e.layoutViewports,
             capabilityAck: e.capabilityAck,
             localExec: e.localExec
           })
@@ -1898,7 +1925,7 @@ export class WorkspaceStore {
     return fileToProject(e.cache, {
       id: e.id, ssh: e.ssh, closed: e.closed, closedAt: e.closedAt,
       viewport: e.viewport, defaultAccountId: e.defaultAccountId, breadcrumbs: e.breadcrumbs,
-      closedSessions: e.closedSessions,
+      closedSessions: e.closedSessions, layoutViewports: e.layoutViewports,
       capabilityAck: e.capabilityAck, localExec: e.localExec
     })
   }
@@ -2046,7 +2073,7 @@ export class WorkspaceStore {
       return fileToProject(adopted, {
         id: e.id, ssh: e.ssh, closed: e.closed, closedAt: e.closedAt,
         viewport: e.viewport, defaultAccountId: e.defaultAccountId, breadcrumbs: e.breadcrumbs,
-        closedSessions: e.closedSessions,
+        closedSessions: e.closedSessions, layoutViewports: e.layoutViewports,
         capabilityAck: e.capabilityAck, localExec: e.localExec
       })
     }
@@ -2062,7 +2089,7 @@ export class WorkspaceStore {
         merged = fileToProject(e.cache, {
           id: e.id, ssh: e.ssh, closed: e.closed, closedAt: e.closedAt,
           viewport: e.viewport, defaultAccountId: e.defaultAccountId, breadcrumbs: e.breadcrumbs,
-          closedSessions: e.closedSessions,
+          closedSessions: e.closedSessions, layoutViewports: e.layoutViewports,
           capabilityAck: e.capabilityAck, localExec: e.localExec
         })
       }
@@ -2124,9 +2151,22 @@ function migrateLegacy(parsed: unknown): Workspace {
     // runs and takes the sidebar render down on the very first load.
     const projects = ws.projects.map((p) => {
       const history = sanitizeLoadedClosedSessions(p.closedSessions)
-      if (history === p.closedSessions) return p
-      const { closedSessions: _dropped, ...rest } = p
-      return history ? { ...rest, closedSessions: history } : rest
+      // Same reason as `closedSessions` above, for the geometry snapshots: this path skips loadV3
+      // entirely, so a non-finite coordinate would reach React Flow before the first save ever
+      // migrates the file.
+      const layouts = sanitizeLayouts(p.layouts)
+      const views = pruneLayoutViewports(sanitizeLayoutViewports(p.layoutViewports), layouts)
+      const unchanged = history === p.closedSessions
+        && layouts === p.layouts
+        && views === p.layoutViewports
+      if (unchanged) return p
+      const { closedSessions: _c, layouts: _l, layoutViewports: _v, ...rest } = p
+      return {
+        ...rest,
+        ...(history ? { closedSessions: history } : {}),
+        ...(layouts ? { layouts } : {}),
+        ...(views ? { layoutViewports: views } : {})
+      }
     })
     return { version: 2, activeProjectId: active, projects }
   }

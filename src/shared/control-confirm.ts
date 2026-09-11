@@ -175,6 +175,18 @@ export function sanitizeControlConfirmWaivers(raw: unknown): ControlConfirmWaive
   return out
 }
 
+/**
+ * The user-visible line a dialog raises when it collects itself unanswered — ONE sentence for every
+ * expiring dialog (`useExpiringDialog`), because a session that raises two differently-worded
+ * notices for the same event reads as two different events.
+ *
+ * It says "nothing was done" and means it: every expiry path drops the dialog without performing
+ * its action. A dialog whose expiry could leave work half-finished must not use this sentence.
+ */
+export function expiredDialogNotice(requestedBy?: string): string {
+  return `The request from ${requestedBy ?? 'an agent'} expired before it was answered — nothing was done.`
+}
+
 /** The user-visible line a WAIVED destructive action raises (Canvas's info banner). A waiver
  *  makes the dialog go away — it must not make the ACTION go quiet, which is why this exists and
  *  why it names the waiver that let the action through. */

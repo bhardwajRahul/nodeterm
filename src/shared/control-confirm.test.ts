@@ -5,6 +5,7 @@ import {
   CONTROL_REQUEST_TIMEOUT_MS,
   confirmExpiresAt,
   decideControlConfirm,
+  expiredDialogNotice,
   isWaivableVerb,
   sanitizeControlConfirmWaivers,
   waivedNotice
@@ -169,6 +170,28 @@ describe('the dialog deadline', () => {
     // Later than main started waiting, never earlier: the renderer receives the request after the
     // timer starts, so the dialog can never abandon a request main would still accept.
     expect(confirmExpiresAt(1_000)).toBeGreaterThan(CONTROL_REQUEST_TIMEOUT_MS)
+  })
+})
+
+describe('expiredDialogNotice', () => {
+  it('names who asked, and says nothing happened', () => {
+    const n = expiredDialogNotice('orchestrator')
+    expect(n).toContain('orchestrator')
+    expect(n).toContain('expired')
+    // The whole point of the sentence: the user must not be left wondering whether the worktree
+    // was removed / the text was sent while they were away.
+    expect(n).toContain('nothing was done')
+  })
+
+  it('falls back to "an agent" rather than printing undefined', () => {
+    expect(expiredDialogNotice()).toContain('an agent')
+    expect(expiredDialogNotice()).not.toContain('undefined')
+  })
+
+  it('is ONE sentence for every expiring dialog', () => {
+    // Both callers (the canvas-control confirm and the worktree-removal dialog) render this. Two
+    // wordings for the same event read as two different events.
+    expect(expiredDialogNotice('x')).toBe(expiredDialogNotice('x'))
   })
 })
 

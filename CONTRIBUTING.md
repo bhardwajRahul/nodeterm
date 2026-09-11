@@ -132,7 +132,12 @@ lane unaffected.
   refusal was retryable, retried into it in a loop. If you raise a dialog for a bounded request,
   give it the deadline (`ConfirmState.expiresAt`), import the bound rather than re-typing it, have
   it expire slightly AFTER the requester gives up, and answer with "expired" — never "denied by
-  user", which claims a decision the human never made.
+  user", which claims a decision the human never made. Reach for the existing
+  `useExpiringDialog` hook rather than a second effect: the worktree-removal dialog needed the
+  identical rule a day later, and two copies is how one of them quietly misses the next fix. Give
+  the deadline only to a dialog an AGENT raised — one the user opened themselves must never vanish
+  under them — and remember that clearing a dialog is not always just nulling its state (that one
+  also has to release the ref its own busy-guard reads).
 
 - **Anything path-shaped: Windows is a delivery target.** Most of this was written on
   macOS/Linux, so the recurring defect is code that is genuinely correct on POSIX —

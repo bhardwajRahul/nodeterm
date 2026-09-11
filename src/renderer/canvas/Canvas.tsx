@@ -525,6 +525,7 @@ import { chordHeld, isHoldChord, isModifierEventKey, matchesShortcut } from '@sh
 // write/close as "the confirm-gated pair" from inside `src/main` — which this project cannot see —
 // while the gating lived in two hand-written blocks here, so the set decided nothing.
 import { isDestructiveVerb, dryRunRequested } from '@shared/control-verbs'
+import { useExpiringDialog } from '../lib/useExpiringDialog'
 import {
   confirmExpiresAt,
   isWaivableVerb,
@@ -688,6 +689,21 @@ interface RemoveState {
   /** Set when an AGENT asked (canvas-control `close-worktree --mode remove`); the dialog says so,
    *  exactly like the agent `write`/`close` confirms do — AND refuses to be confirmed by keyboard. */
   requestedBy?: string
+  /**
+   * When this dialog collects itself unanswered (`useExpiringDialog`). Set ONLY for an
+   * agent-requested removal — a removal the USER opened from the group menu must never vanish
+   * under them.
+   *
+   * There is deliberately no `onExpire` to go with it, and the asymmetry with `ConfirmState` is
+   * the point: `close-worktree --mode remove` replies to the CLI the instant the dialog opens
+   * ("removal confirmation shown to the user — they decide"), so nobody is waiting on an answer
+   * and there is nothing to tell. What the expiry buys here is the OTHER half of PR #740's bug —
+   * this dialog holds `confirmBusy()` (and `removePendingRef`) while it is open, so an unanswered
+   * one refuses every later destructive verb for the rest of the app run. It is also the most
+   * dangerous dialog to leave lying around: it is the one with a pre-ticked delete-from-disk
+   * choice on a worktree the human never asked about.
+   */
+  expiresAt?: number
 }
 interface MergeState {
   repoPath: string
@@ -1611,40 +1627,43 @@ export function Canvas() {
    * node asked about again and again, because the agent was told to retry and every retry hit a
    * dialog that could no longer be answered.
    *
-   * It replies `expired` on the way out rather than cancelling: `denied by user` would be a lie
-   * about a decision the human never made, and a reply main has already timed out is simply
-   * dropped (`if (!pending) return`). If the renderer's timer fires while main IS still waiting —
-   * a background tab's throttled `setTimeout`, a clock jump — that reply is what stops the caller
-   * waiting out the remaining budget for a dialog that is gone.
+   * It replies `expired` on the way out rather than cancelling (`ConfirmState.onExpire`):
+   * `denied by user` would be a lie about a decision the human never made, and a reply main has
+   * already timed out is simply dropped (`if (!pending) return`). If the renderer's timer fires
+   * while main IS still waiting — a background tab's throttled `setTimeout`, a clock jump — that
+   * reply is what stops the caller waiting out the remaining budget for a dialog that is gone.
    *
-   * The notice is deliberately non-blocking: raising an alert would keep `confirmBusy` true, i.e.
-   * reproduce the bug this closes with better wording.
+   * The timer, the already-past case and the notice live in `useExpiringDialog`, shared with the
+   * worktree-removal dialog below — one rule, one implementation.
    */
-  useEffect(() => {
-    const at = confirm?.expiresAt
-    if (!at) return
-    const fire = (): void => {
-      confirm?.onExpire?.()
-      setConfirm(null)
-      setNotice({
-        kind: 'info',
-        text: `The request from ${confirm?.requestedBy ?? 'an agent'} expired before it was answered — nothing was done.`
-      })
-    }
-    const ms = at - Date.now()
-    if (ms <= 0) {
-      fire()
-      return
-    }
-    const t = setTimeout(fire, ms)
-    return () => clearTimeout(t)
-    // `confirm` is replaced wholesale per dialog, so its identity is the right key.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [confirm, setConfirm])
+  useExpiringDialog(
+    confirm,
+    () => setConfirm(null),
+    (text) => setNotice({ kind: 'info', text })
+  )
   const setRemoveTarget = useCallback((v: RemoveState | null) => {
     confirmFlags.current.remove = !!v
     setRemoveTargetState(v)
   }, [])
+  /**
+   * The same rule for the worktree-removal dialog (`close-worktree --mode remove`), through the
+   * same hook — PR #740 closed this for the canvas-control confirm and left this one open.
+   *
+   * It needs no `onExpire`: the verb answered its caller the moment the dialog opened, so nobody is
+   * waiting. It DOES need `removePendingRef` released. That ref covers the async gap in
+   * `requestRemoveWorktree` (the `git.status` probe runs before `removeTarget` exists) and
+   * `confirmBusy()` reads it directly, so dropping the state while leaving the ref latched would
+   * close this dialog and keep refusing every later destructive verb anyway — the bug, minus the
+   * only thing on screen that explained it. Both answer paths already clear it; this is the third.
+   */
+  useExpiringDialog(
+    removeTarget,
+    () => {
+      removePendingRef.current = false
+      setRemoveTarget(null)
+    },
+    (text) => setNotice({ kind: 'info', text })
+  )
   const setMoveTarget = useCallback((v: string | null) => {
     confirmFlags.current.move = !!v
     setMoveTargetState(v)
@@ -5758,7 +5777,12 @@ export function Canvas() {
           canDelete: wt.createdByApp,
           branch: wt.branch,
           path: wt.path,
-          requestedBy: opts?.requestedBy
+          requestedBy: opts?.requestedBy,
+          // An AGENT-raised dialog gets a deadline; a removal the user opened themselves never
+          // does. Same budget as a control request (`confirmExpiresAt`) because it is the same
+          // class of fact — "an agent asked and the human is not at the machine" — and one number
+          // beats two that mean the same thing.
+          expiresAt: opts?.requestedBy ? confirmExpiresAt(Date.now()) : undefined
         })
         return { ok: true }
       } catch (e) {

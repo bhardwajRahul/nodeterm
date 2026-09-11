@@ -2052,10 +2052,22 @@ else, and its context links must keep classifying across restarts).
   (the other direction would abandon a dialog whose answer main would still accept); it replies
   `expired` rather than `denied by user` (nobody denied anything, and a reply main has already
   timed out is simply dropped); and the notice is a fading info strip, because raising an alert
-  would keep `confirmBusy()` true — i.e. reproduce the bug with better wording. `close-worktree
-  --mode remove`'s dialog is deliberately outside this: it replies to the CLI immediately
-  ("the user decides") so there is no pending request to expire — its own `confirmBusy` hold is a
-  separate, still-open gap.
+  would keep `confirmBusy()` true — i.e. reproduce the bug with better wording.
+  **`close-worktree --mode remove`'s dialog expires too** (2026-09-11), through the SAME
+  `renderer/lib/useExpiringDialog.ts` the confirm uses — the rule was extracted rather than copied,
+  because a second effect beside the first is how one gains a fix the other silently lacks. Three
+  differences to keep in mind, all deliberate: it carries **no `onExpire`** (the verb replies
+  "removal confirmation shown to the user — they decide" the instant the dialog opens, so nobody is
+  waiting on an answer and an `onExpire` would be a reply to a call that finished minutes ago); its
+  clear must also release **`removePendingRef`**, the guard covering the async `git.status` gap
+  before `removeTarget` exists, which `confirmBusy()` reads directly — dropping the state while
+  leaving that ref latched closes the dialog and keeps refusing every later destructive verb, i.e.
+  the bug minus the only thing on screen that explained it; and the deadline is set **only when
+  `requestedBy` is present**, because a removal the USER opened from the group menu must never
+  vanish under them. It reuses `confirmExpiresAt` rather than inventing a second timeout: the fact
+  is the same class ("an agent asked and the human is not at the machine"), and this is the most
+  dangerous dialog to leave lying around — the one carrying a pre-ticked delete-from-disk choice on
+  a worktree the human never asked about.
   **MEASURED, and the answer is no: two canvases cannot raise two dialogs for one request.** The
   suspicion was worth checking because the same project can be open on a desktop and in a Server
   Edition browser at once. Desktop main forwards each request to `getMainWindow()` — one

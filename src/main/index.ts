@@ -1078,7 +1078,23 @@ function createWindow(): BrowserWindow {
     }
   })
 
-  win.on('ready-to-show', () => win.show())
+  // FIRST PAINT ONLY — `once`, never `on` (issue #737).
+  //
+  // `ready-to-show` fires on the first paint of EVERY main-frame navigation, not once per window.
+  // MEASURED on Electron 42.9.1 (the reporter ran 42.10.0): a `webContents.reload()` on a VISIBLE
+  // window emits it a second time, with `isVisible()` already true. The crash auto-reload above is
+  // an unattended background navigation, so a persistent listener called `win.show()` on a window
+  // that was already showing — and on macOS `show()` activates the app. That is nodeterm raising
+  // itself over whatever the user had just ⌘Tabbed to, with no user action anywhere in the chain.
+  //
+  // Nothing may bring the window forward without a user action. The exceptions are enumerated in
+  // `window-raise.guard.test.ts`, and all of them are a click: a notification tap, a HUD row, a
+  // Dock activate, a second launch, a file dropped onto a terminal.
+  //
+  // The gate is FIRST PAINT, not `isVisible()`. After macOS hide-on-close the window is hidden but
+  // alive, and an `isVisible()` gate would then `show()` it on a background reload — the same bug
+  // inverted, raising a window the user had deliberately put away.
+  win.once('ready-to-show', () => win.show())
   // The main window is a regular app window; establishing its Dock presence explicitly means the
   // later focusable:false Notch HUD panel can never leave the app looking like an accessory.
   win.on('show', () => assertRegularDockPresence())
@@ -1460,9 +1476,15 @@ app.whenReady().then(async () => {
   // another app does NOT activate the destination app, so without this the drag-source keeps OS
   // keyboard focus and the user types into the wrong application. `getMainWindow()` (not the
   // focused window — there may be none) restores + shows + focuses.
-  ipcMain.on(IPC.appFocusWindow, () => {
+  ipcMain.on(IPC.appFocusWindow, (event) => {
     const w = getMainWindow()
     if (!w) return
+    // The SAME sender guard as `uiShortcutRecording` / `uiTerminalFocus` above, and for the same
+    // reason: a <webview> guest — a browser node showing an arbitrary page — is a webContents in
+    // this process, and this is the one renderer-reachable `app.focus({steal:true})` in the app.
+    // Without the guard a page could activate nodeterm over whatever the user was doing (the
+    // no-unconsented-raise rule of issue #737). Its two neighbours were guarded; this was not.
+    if (w.webContents.id !== event.sender.id) return
     if (w.isMinimized()) w.restore()
     w.show()
     // On macOS `win.focus()` alone won't pull us in front of the still-active drag-source app —

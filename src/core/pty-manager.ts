@@ -99,7 +99,7 @@ import {
 } from './codex-identity-proxy'
 import { ensureNodeToken, ensureRemoteNodeToken, sweepNodeToken } from './agents/node-token-service'
 import { clearNode as clearNodeAgentStatus } from './agent-status-mirror'
-import { hasSharedIdentity, setCustomAgentBaseResolver, type AgentId } from '../shared/agents/config'
+import { hasSharedIdentity, setCustomAgentBaseResolver, vanillaEnvStripPattern, type AgentId } from '../shared/agents/config'
 import { findCustomAgent } from '../shared/agents/custom-agent'
 import { applyCustomAgentEnv, customAgentEnvArgs } from './custom-agent-env'
 import {
@@ -2767,17 +2767,42 @@ export class PtyManager {
     // A plain terminal has no agentId and must never receive provider credentials. The hook env's
     // historical Claude fallback does not apply here: gateway access is an explicit agent
     // capability, not a terminal default.
-    const gatewayEnv = options.agentId
-      ? modelGatewayEnv(
-          this.getSettings().modelGateway,
-          options.agentId,
-          options.agentModel,
-          process.env as Record<string, string | undefined>,
-          this.getModelGatewaySecret()
-        )
-      : {}
+    //
+    // "Restart on subscription" / launch mode: strip the gateway + inherited provider env
+    // so the agent runs against its OWN default provider (Claude's subscription, Copilot's GitHub
+    // routing). `vanillaEnvStripPattern` resolves through the base harness (`capabilityAgentId` of
+    // the agent id, so a custom agent inheriting a builtin gets the builtin's strip set); null ⇒ the
+    // agent has no strip set ⇒ no-op (gemini/grok/opencode are left alone). `buildPtyEnv` runs only
+    // in `spawnNew` (a fresh session), never on a warm reattach, so toggling the setting never strips
+    // an already-running session — only the next fresh launch.
+    // The launch mode is a tri-state (`agentLaunchMode`); a per-node one-shot `clearEnv` (the
+    // "Restart on subscription" action) forces the subscription/vanilla path for THIS spawn. The
+    // old boolean `vanillaLaunchDefault` is now a migration mirror kept in lockstep with the mode
+    // by the settings read/write paths, so reading the mode here is sufficient.
+    const launchMode = options.clearEnv ? 'subscription' : this.getSettings().agentLaunchMode
+    const stripRe =
+      launchMode === 'subscription'
+        ? options.agentId
+          ? vanillaEnvStripPattern(options.agentId)
+          : null
+        : null
+    const gatewayEnv =
+      options.agentId && !stripRe
+        ? modelGatewayEnv(
+            this.getSettings().modelGateway,
+            options.agentId,
+            options.agentModel,
+            process.env as Record<string, string | undefined>,
+            this.getModelGatewaySecret()
+          )
+        : {}
     if (!options.sshRemote) {
       for (const [k, v] of Object.entries(gatewayEnv)) env[k] = v
+      // Strip inherited provider vars so a vanilla session does not fall back to a LaunchAgent-set
+      // ANTHROPIC_BASE_URL instead of the subscription. Local only — see the note above.
+      if (stripRe) {
+        for (const k of Object.keys(env)) if (stripRe.test(k)) delete env[k]
+      }
     }
 
     // The OWNING project's env (`.nodeterm/settings.json`, local overlay + TRUSTED shared half —

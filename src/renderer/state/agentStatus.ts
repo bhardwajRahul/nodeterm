@@ -260,6 +260,14 @@ export interface AgentStatusStore {
     verified?: boolean,
     errored?: boolean
   ): void
+  /**
+   * Subscribe to EVERY hook event `setState` records for node `id` — same-state ones included, and
+   * only once the store already reflects it. A zustand selector cannot see those: the same-state
+   * fast path refreshes `stateAt` IN PLACE and returns the same state object, so no subscriber is
+   * notified (deliberately — a notification per tool event would re-run every header's selector).
+   * This side channel is how the ⌘M panel refreshes its tail while a turn runs. Returns unsubscribe.
+   */
+  onHookEvent(id: string, cb: () => void): () => void
   /** Clear `working` entries whose last event is older than `staleMs` (lost-Stop safety net). */
   sweepStaleWorking(staleMs?: number): void
   setSession(id: string, session: string): void
@@ -494,9 +502,35 @@ export function createAgentStatusSession(
     }
   }
 
+  // `onHookEvent` listeners, per node id. Outside zustand on purpose (see the interface).
+  const hookEventSubs = new Map<string, Set<() => void>>()
+  const pulse = (id: string): void => {
+    const subs = hookEventSubs.get(id)
+    if (!subs) return
+    for (const cb of [...subs]) {
+      // Runs inside Canvas's hook-event handler, after the store write: one throwing listener must
+      // neither abort that handler nor starve the listeners after it.
+      try {
+        cb()
+      } catch (e) {
+        console.warn('[agentStatus] onHookEvent listener threw', e)
+      }
+    }
+  }
+
   const store = create<AgentStatusStore>((set) => ({
     byId: load(),
     activeId: null,
+
+    onHookEvent: (id, cb) => {
+      let subs = hookEventSubs.get(id)
+      if (!subs) hookEventSubs.set(id, (subs = new Set()))
+      subs.add(cb)
+      return () => {
+        subs.delete(cb)
+        if (subs.size === 0 && hookEventSubs.get(id) === subs) hookEventSubs.delete(id)
+      }
+    },
 
     setActive: (id, active) =>
       set((s) => {
@@ -504,7 +538,7 @@ export function createAgentStatusSession(
         return s.activeId === id ? { activeId: null } : s
       }),
 
-    setState: (id, state, agentId, newTurn, pendingId, verified, errored) =>
+    setState: (id, state, agentId, newTurn, pendingId, verified, errored) => {
       set((s) => {
         const prev = s.byId[id] ?? EMPTY
         const now = Date.now()
@@ -637,7 +671,10 @@ export function createAgentStatusSession(
         // that has been demonstrably running since.
         if (alive && (prev.hibernated || prev.paused)) save(byId)
         return { byId }
-      }),
+      })
+      // After the set: a listener reads the store and must see this event applied.
+      pulse(id)
+    },
 
     sweepStaleWorking: (staleMs = STALE_WORKING_MS) =>
       set((s) => {

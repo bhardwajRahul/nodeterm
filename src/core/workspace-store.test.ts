@@ -1236,6 +1236,76 @@ describe('ssh reconcile self-write recognition (the spurious conflict bar)', () 
 // so overlapping saves spliced each other's tmp bytes (corrupt JSON published by rename) and a slow
 // older save could land its stale index after a newer one. A corrupt index then silently became
 // EMPTY_WORKSPACE, which the renderer's unconditional boot save wrote back — zero entries, no backup.
+// Autosave runs 800 ms after every edit or camera move. It must not re-parse every folder project's
+// last-written bytes, nor rewrite an index whose bytes it already wrote — but a write another
+// writer made on disk since then must still be answered with ours.
+describe('autosave skips unchanged work', () => {
+  const indexPath = () => path.join(userData, 'workspace.json')
+  const readIndex = async () =>
+    JSON.parse((await fs.readFile(indexPath(), 'utf-8')).replace(/\r\n/g, '\n'))
+  const tick = () => new Promise((r) => setTimeout(r, 20))
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('a second identical save does not rewrite workspace.json', async () => {
+    const store = new WorkspaceStore()
+    await store.save(ws([project({ cwd: projRoot })]))
+    const first = (await fs.stat(indexPath())).mtimeMs
+    await tick()
+    await store.save(ws([project({ cwd: projRoot })]))
+    expect((await fs.stat(indexPath())).mtimeMs).toBe(first)
+  })
+
+  it('rewrites workspace.json when another writer changed it on disk, even if our index is unchanged', async () => {
+    const store = new WorkspaceStore()
+    await store.save(ws([project({ cwd: projRoot })]))
+    await fs.writeFile(indexPath(), '{"version":3,"entries":[]}') // another instance
+    await store.save(ws([project({ cwd: projRoot })]))
+    expect((await readIndex()).entries.length).toBeGreaterThan(0)
+  })
+
+  it('a changed index is still written', async () => {
+    const store = new WorkspaceStore()
+    await store.save(ws([project({ cwd: projRoot })]))
+    await store.save(ws([project({ cwd: projRoot, name: 'renamed' })]))
+    expect((await readIndex()).entries[0].name).toBe('renamed')
+  })
+
+  it('the first save of a store instance always writes, even when the bytes on disk already match', async () => {
+    await new WorkspaceStore().save(ws([project({ cwd: projRoot })]))
+    const again = new WorkspaceStore()
+    const loaded = await again.load()
+    const before = (await fs.stat(indexPath())).mtimeMs
+    await tick()
+    await again.save(loaded)
+    expect((await fs.stat(indexPath())).mtimeMs).not.toBe(before)
+  })
+
+  it('steady-state autosaves do not re-parse the project file last written', async () => {
+    const store = new WorkspaceStore()
+    await store.save(ws([project({ cwd: projRoot })]))
+    await store.save(ws([project({ cwd: projRoot })])) // parses the last write once
+    const raw = await fs.readFile(path.join(projRoot, '.nodeterm/project.json'), 'utf-8')
+    const parse = vi.spyOn(JSON, 'parse')
+    await store.save(ws([project({ cwd: projRoot })]))
+    expect(parse.mock.calls.some(([text]) => text === raw)).toBe(false)
+  })
+
+  it('compares against the NEWEST write: A → B → A writes the project file every time', async () => {
+    const store = new WorkspaceStore()
+    const file = path.join(projRoot, '.nodeterm/project.json')
+    await store.save(ws([project({ cwd: projRoot, name: 'a' })]))
+    await store.save(ws([project({ cwd: projRoot, name: 'b' })]))
+    expect(JSON.parse(await fs.readFile(file, 'utf-8')).name).toBe('b')
+    await store.save(ws([project({ cwd: projRoot, name: 'a' })]))
+    const back = JSON.parse(await fs.readFile(file, 'utf-8'))
+    expect(back.name).toBe('a')
+    expect(back.rev).toBe(3)
+  })
+})
+
 describe('save corruption hardening', () => {
   afterEach(() => {
     vi.restoreAllMocks()

@@ -29,6 +29,7 @@ const { sendText, session } = vi.hoisted(() => {
 vi.mock('../session/session', () => ({ useSession: () => session }))
 
 import { ChatPanel } from './ChatPanel'
+import { escapeDroppedPath } from '../terminal/file-drop'
 
 const NODE = 'n-composer'
 const SESSION = 's-composer'
@@ -89,7 +90,8 @@ const flush = () => act(async () => {
 beforeEach(() => {
   sendText.mockReset()
   sendText.mockResolvedValue(true)
-  pathsForFiles = vi.fn(async (files: File[]) => files.map((f) => `/tmp/${f.name.replace(/ /g, '\\ ')}`))
+  // Production's own escaper (the one `droppedPaths` applies), not a re-implementation of it.
+  pathsForFiles = vi.fn(async (files: File[]) => files.map((f) => escapeDroppedPath(`/tmp/${f.name}`)))
   onShowTerminal = vi.fn()
   host = document.createElement('div')
   document.body.appendChild(host)

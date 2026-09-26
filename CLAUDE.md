@@ -1205,8 +1205,16 @@ seed** — the cases are:
   resync has superseded the seed, since that repaint may already be on screen). Without it a
   renderer reload left every terminal on the normal buffer, piling up to 10k lines of scrollback
   and forcing a layout per output frame — measured 16.1% vs 7.3% CPU for one terminal at
-  20 lines/s, 313 vs 1 forced layouts per 20 s. Note `repaintResync`'s `term.reset()` also drops a
-  terminal back to the normal buffer; that is not addressed here.
+  20 lines/s, 313 vs 1 forced layouts per 20 s. **A resync repaint loses the same two modes**:
+  `repaintResync`'s `term.reset()` drops ANY terminal — the solo spawn too, not only a joiner —
+  back to the normal buffer and clears mouse tracking, and resyncs happen under backpressure, i.e.
+  on exactly the streaming terminals the alt switch exists for. So every create now reports
+  `PtyCreateResult.tmuxClient` (same `tmuxBacked && !sessionHost` gate, set on spawn AND join), and
+  `repaintResync` writes `CO_ATTACH_ALT_SCREEN_SEQ + CO_ATTACH_MOUSE_SEQ` between the reset and the
+  paint when it is set. Optional on purpose: an older core or relay peer omits it and gets the old
+  behavior (nothing re-applied), never a guess. The recycle banner ("session restarted by another
+  user") is written AFTER the joiner's seed paint for the same reason — written before the alt
+  switch, it sat in a buffer nobody could see.
 
 xterm's own `scrollback` (`xtermScrollback(settings.tmuxScrollback)`, floored at 1000, capped at
 `XTERM_SCROLLBACK_MAX` = 10000) is kept for the sessions tmux does *not* back (a plain shell when

@@ -283,6 +283,17 @@ export interface PtyCreateResult {
    */
   coAttachAltScreen?: boolean
   /**
+   * This session's client is a real TMUX client (local or remote; never a session-host session or a
+   * plain shell) — set on EVERY create, the solo spawn as well as a join. A `pty:resync` repaint
+   * (`repaintResync`) calls `term.reset()`, which drops the emulator back to the NORMAL buffer and
+   * clears mouse tracking; tmux does not re-send either (it emitted them once, at attach), so the
+   * renderer re-applies `CO_ATTACH_ALT_SCREEN_SEQ` + `CO_ATTACH_MOUSE_SEQ` after the reset when
+   * this is set. Same condition as `coAttachAltScreen`, asked of every session rather than only a
+   * joiner. Absent = unknown (an older core or relay peer) ⇒ the renderer re-applies nothing, the
+   * pre-field behavior.
+   */
+  tmuxClient?: boolean
+  /**
    * This session is TMUX-BACKED (local or remote) — it survives losing this client, so killing our
    * pty client only detaches us and everything running in the session keeps going.
    *

@@ -3178,6 +3178,7 @@ export function TerminalNode({
           cursor,
           coAttachMouse,
           coAttachAltScreen,
+          tmuxClient,
           persistent,
           sessionHost,
           unavailable
@@ -3363,7 +3364,7 @@ export function TerminalNode({
               if (!shouldApplyResync(resyncScreen)) return
               superseded = true
               relieve(gate.reset())
-              repaintResync(term, resyncScreen, () => !life.dead)
+              repaintResync(term, resyncScreen, () => !life.dead, tmuxClient === true)
             })
           )
         }

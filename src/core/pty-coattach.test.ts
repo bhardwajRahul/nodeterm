@@ -1267,6 +1267,7 @@ describe('a tmux-backed joiner is told to enable mouse tracking', () => {
       screen?: string
       coAttachMouse?: boolean
       coAttachAltScreen?: boolean
+      tmuxClient?: boolean
     }>
 
   it('sets coAttachMouse on a joiner whose grid EQUALS the pty (the screen-painted branch)', async () => {
@@ -1339,6 +1340,30 @@ describe('a tmux-backed joiner is told to enable mouse tracking', () => {
     await tmuxManager()
     const a = await create(ALICE, 80, 24)
     expect(a.coAttachAltScreen).toBeUndefined()
+  })
+
+  // A resync's `term.reset()` drops ANY tmux client (the solo spawn too, not only a joiner) out of
+  // the alternate buffer and clears its mouse tracking. `tmuxClient` tells the renderer to put
+  // both back — so it rides EVERY tmux-backed create, never a plain shell's.
+  it('sets tmuxClient on the SOLO tmux spawn and on a tmux join', async () => {
+    const m = await tmuxManager()
+    vi.spyOn(m, 'captureForResync').mockResolvedValue('current screen')
+    const a = await create(ALICE, 80, 24)
+    expect(a.tmuxClient).toBe(true)
+    const b = await create(BOB, 80, 24)
+    expect(b.tmuxClient).toBe(true)
+  })
+
+  it('never sets tmuxClient for a plain shell (spawn or join)', async () => {
+    const { PtyManager } = await import('./pty-manager')
+    const m = new PtyManager()
+    m.registerIpc()
+    vi.spyOn(m, 'captureForResync').mockResolvedValue('current screen')
+    const a = await create(ALICE, 80, 24)
+    expect(a.tmuxClient).toBeUndefined()
+    const b = await create(BOB, 80, 24)
+    expect(b.fresh).toBe(false)
+    expect(b.tmuxClient).toBeUndefined()
   })
 
   it('does NOT set coAttachAltScreen on a plain-shell join (its scrollback is the only history)', async () => {

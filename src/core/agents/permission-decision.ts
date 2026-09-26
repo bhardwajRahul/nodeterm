@@ -17,6 +17,7 @@
 
 import {
   ASK_USER_QUESTION_TOOL,
+  ANSWER_TEXT_MAX_CHARS,
   EXIT_PLAN_MODE_TOOL,
   isSafeToolName,
   type PermissionAnswer
@@ -57,8 +58,8 @@ export const PERM_WAIT_SECS_INTERACTIVE = 540
 
 /** Caps on user-typed text, in UTF-16 code units (`string.length`) — a person-sized limit, not a
  *  wire limit; the whole decision's BYTE cap above is what bounds the file. */
-export const PLAN_REVISE_MAX_CHARS = 8000
-export const FREE_TEXT_MAX_CHARS = 8000
+export const PLAN_REVISE_MAX_CHARS = ANSWER_TEXT_MAX_CHARS
+export const FREE_TEXT_MAX_CHARS = ANSWER_TEXT_MAX_CHARS
 
 const PLAN_REVISE_PREFIX = 'The user reviewed the plan and wants changes before you proceed: '
 

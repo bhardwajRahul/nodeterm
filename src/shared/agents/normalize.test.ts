@@ -139,6 +139,33 @@ describe('normalizeClaude — held tool (structured answers)', () => {
     expect(bad && 'held' in bad).toBe(false)
     expect(bad).toMatchObject({ pendingId: 'n1-1-1' }) // the approval ticket itself is untouched
   })
+  it('a held question also carries its exact question texts, so a surface can match its card', () => {
+    const e = normalizeClaude(
+      env({
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'AskUserQuestion',
+        nodeterm_pending_id: 'n1-1-1',
+        tool_input: { questions: [{ question: 'Pick one?', options: [{ label: 'A' }] }, { question: 'And?' }] }
+      })
+    )
+    expect(e).toMatchObject({ held: { pendingId: 'n1-1-1', toolName: 'AskUserQuestion', questions: ['Pick one?', 'And?'] } })
+  })
+  it('an unreadable question input keeps the held ticket but carries no texts (no controls)', () => {
+    const e = normalizeClaude(
+      env({
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'AskUserQuestion',
+        nodeterm_pending_id: 'n1-1-1',
+        tool_input: { questions: 'nope' }
+      })
+    )
+    expect(e && e.held).toEqual({ pendingId: 'n1-1-1', toolName: 'AskUserQuestion' })
+    // A plan never carries question texts.
+    const plan = normalizeClaude(
+      env({ hook_event_name: 'PermissionRequest', tool_name: 'ExitPlanMode', nodeterm_pending_id: 'n1-1-1', tool_input: { plan: 'p' } })
+    )
+    expect(plan && plan.held).toEqual({ pendingId: 'n1-1-1', toolName: 'ExitPlanMode' })
+  })
   it('the answered signal carries no held request (the hold is over)', () => {
     const e = normalizeClaude(
       env({ hook_event_name: 'PermissionRequest', tool_name: 'ExitPlanMode', nodeterm_pending_id: 'n1-1-1', nodeterm_answered: 'allow' })

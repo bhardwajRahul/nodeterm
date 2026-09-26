@@ -41,6 +41,11 @@ export type PermissionAnswer =
   | { kind: 'plan-revise'; message: string }
   | { kind: 'question'; answers: Record<string, string | string[]>; freeText?: string[] }
 
+/** Typed text in an answer ("Revise…" feedback, a question's "Other"), in UTF-16 code units. ONE
+ *  definition: core refuses past it and the answer fields stop at it, so a field can never accept
+ *  text core would then refuse. A person-sized limit; the decision's byte cap bounds the file. */
+export const ANSWER_TEXT_MAX_CHARS = 8000
+
 /** The payload of `window.nodeTerminal.answerPermission`. `decision` is the pre-structured
  *  contract and still works alone; when `answer` is present it wins. */
 export interface AnswerPermissionPayload {
@@ -60,6 +65,69 @@ export interface AnswerPermissionPayload {
 export interface HeldPermission {
   pendingId: string
   toolName: string
+  /** AskUserQuestion only: the held request's EXACT question texts (`readQuestions`), so a surface
+   *  can tell which question card the ticket belongs to. Absent = unreadable input = no controls. */
+  questions?: string[]
+}
+
+/** One AskUserQuestion option, as a surface renders it. */
+export interface ChatQuestionOption {
+  label: string
+  description?: string
+}
+
+/** One AskUserQuestion question, read for the answer controls. `question` and each `label` are
+ *  ANSWER KEYS (core matches them byte for byte against the pending request), so they are carried
+ *  exactly or not at all. `options` is empty for the free-text variant. */
+export interface ChatQuestion {
+  question: string
+  header?: string
+  multiSelect: boolean
+  options: ChatQuestionOption[]
+}
+
+/** Bounds for `readQuestions`. Exceeding one refuses the input (an answer key cannot be truncated);
+ *  far above anything the picker shows, which lists a handful of questions with a handful of options. */
+export const QUESTIONS_MAX = 16
+export const QUESTION_OPTIONS_MAX = 32
+export const QUESTION_TEXT_MAX_CHARS = 4000
+
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v)
+const keyText = (v: unknown): v is string =>
+  typeof v === 'string' && v !== '' && v.length <= QUESTION_TEXT_MAX_CHARS
+/** A display-only string (header, description): kept when readable, dropped (never refused) when not. */
+const displayText = (v: unknown): string | undefined => (keyText(v) && v.trim() !== '' ? v : undefined)
+
+/**
+ * The ONE reader of an AskUserQuestion `tool_input` for the answer UI — used for the question card
+ * (`core/transcript-reader.ts`) AND for the held request's texts (`normalizeClaude`), so the two can
+ * be compared without either side drifting. All or nothing: a question it cannot read, a duplicate
+ * question text or anything over the bounds refuses the whole input, because a partial list would
+ * let the UI submit an answer that silently skips a question. Undefined = no controls, read-only card.
+ */
+export function readQuestions(input: unknown): ChatQuestion[] | undefined {
+  if (!isRecord(input) || !Array.isArray(input.questions)) return undefined
+  const qs = input.questions
+  if (qs.length === 0 || qs.length > QUESTIONS_MAX) return undefined
+  const out: ChatQuestion[] = []
+  const seen = new Set<string>()
+  for (const q of qs) {
+    if (!isRecord(q) || !keyText(q.question) || seen.has(q.question)) return undefined
+    seen.add(q.question)
+    const options: ChatQuestionOption[] = []
+    if (q.options !== undefined) {
+      if (!Array.isArray(q.options) || q.options.length > QUESTION_OPTIONS_MAX) return undefined
+      for (const o of q.options) {
+        if (!isRecord(o) || !keyText(o.label)) return undefined
+        const description = displayText(o.description)
+        options.push(description ? { label: o.label, description } : { label: o.label })
+      }
+    }
+    const header = displayText(q.header)
+    out.push({ question: q.question, ...(header ? { header } : {}), multiSelect: q.multiSelect === true, options })
+  }
+  return out
 }
 
 /** Tool names are agent-controlled text (MCP tools are `mcp__<server>__<tool>`); only a plain

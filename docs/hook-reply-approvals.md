@@ -147,6 +147,22 @@ agent-status store keeps it while the node is `blocked` or `waiting` — separat
 the mirror still strips from a question so approve/deny never lights on a picker. The phone mirror file
 is unchanged (`held` is not persisted there).
 
+**Answer controls in the ⌘M view (2026-09).** The Plan / Question card in `ChatPanel` carries
+controls only when the node's `held` belongs to it (`renderer/lib/chatAnswer.ts` `activeAnswerCard`):
+the newest unanswered card of the held tool, and — for a question — the SAME question texts in the
+same order. That is why a held question also carries its texts (`held.questions`), read by the one
+`readQuestions` (`shared/agents/permission-answer.ts`) that also fills the card's structured
+`questions` (`core/transcript-reader.ts`), so the two sides cannot disagree about a text. Plan:
+"Approve · previous mode" (`restore`, first and primary), "Approve · accept edits", "Approve · ask
+before edits", "Revise…" (feedback → `plan-revise`). Question: radio (single) / checkbox (multiSelect),
+an "Other" text field (the only input on a question with no options), Submit once every question is
+answered; a multi-select "Other" joins the ticked labels and the text with `", "` as one free-text
+answer. The ticket is re-checked against the store at send time; `false` (or a rejection) shows
+"Couldn't send — answer in the terminal (⌘M)" and leaves the controls usable — never a stuck "Sent".
+While controls are up, the composer placeholder and the status row point at the card
+(`chatComposerPlaceholder({answerOnCard})`). The kanban card modal mounts the same `ChatPanel`, so the
+controls appear there too.
+
 **Surfaces.** Desktop: local + SSH (ControlMaster read + stdin write). Server Edition: local projects
 (SSH projects remain unsupported there, as before). Relay: unchanged. Mobile: keeps writing
 `allow`/`deny`; its plan approve now works through the script mapping once the host's script is current;

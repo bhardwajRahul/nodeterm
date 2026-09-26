@@ -71,6 +71,17 @@ describe('chatComposerPlaceholder', () => {
     expect(chatComposerPlaceholder({ ...base, refusal: 'working' })).toBe('Grok is working…')
   })
 
+  it('points a dialog at the answer card when that card has controls — the chord is the fallback', () => {
+    expect(chatComposerPlaceholder({ ...base, refusal: 'dialog', answerOnCard: true })).toBe(
+      'Grok is waiting for your answer — answer on the card above, or press ⌘M to answer in the terminal'
+    )
+    expect(chatComposerPlaceholder({ ...base, chip: '', refusal: 'dialog', answerOnCard: true })).toBe(
+      'Grok is waiting for your answer — answer on the card above'
+    )
+    // Only the dialog copy changes.
+    expect(chatComposerPlaceholder({ ...base, refusal: 'working', answerOnCard: true })).toBe('Grok is working…')
+  })
+
   it('points a dialog back at the terminal through the bound chord', () => {
     expect(chatComposerPlaceholder({ ...base, refusal: 'dialog' })).toBe(
       'Grok is waiting for an answer in the terminal — press ⌘M to answer there'

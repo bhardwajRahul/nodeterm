@@ -353,6 +353,30 @@ describe('tool bodies in the chat parse', () => {
     expect(olderPage.messages[0].parts[0]).toMatchObject({ kind: 'tool', id: 'p2', body: PLAN })
   })
 
+  it('a question carries its structured questions beside the markdown body (the answer controls)', () => {
+    const input = {
+      questions: [
+        { question: 'Pick one?', header: 'H', multiSelect: false, options: [{ label: 'A', description: 'a' }, { label: 'B' }] }
+      ]
+    }
+    const line = jl({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'q1', name: 'AskUserQuestion', input }] } })
+    const legacy = parseChatMessages(line.split('\n'))[0].parts[0]
+    const paged = parseChatWindow(Buffer.from(line), 0).messages[0].parts[0]
+    for (const part of [legacy, paged]) {
+      expect(part).toMatchObject({
+        kind: 'tool',
+        name: 'AskUserQuestion',
+        questions: [
+          { question: 'Pick one?', header: 'H', multiSelect: false, options: [{ label: 'A', description: 'a' }, { label: 'B' }] }
+        ]
+      })
+      expect(part.kind === 'tool' && part.body).toContain('Pick one?')
+    }
+    // A plan carries no questions.
+    const plan = parseChatMessages(planUse('p1').split('\n'))[0].parts[0]
+    expect(plan.kind === 'tool' && 'questions' in plan).toBe(false)
+  })
+
   it('a tool with no body keeps today\'s shape exactly (no body key)', () => {
     const msgs = parseChatMessages(toolUse('t1', 'ls').split('\n'))
     expect(msgs[0].parts[0]).toEqual({ kind: 'tool', name: 'Bash', arg: 'ls' })

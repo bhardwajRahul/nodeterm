@@ -1129,7 +1129,8 @@ describe('recordAgentEvent enrichment (returned broadcast event)', () => {
     const out = recordAgentEvent(perm)
     expect(out.askKind).toBe('question')
     expect(out.pendingId).toBeUndefined() // no approve/deny on a picker — unchanged
-    expect(out.held).toEqual({ pendingId: 'e9-1-1', toolName: 'AskUserQuestion' })
+    // The question texts ride along (answer controls match their card by them).
+    expect(out.held).toEqual({ pendingId: 'e9-1-1', toolName: 'AskUserQuestion', questions: ['Which theme?'] })
   })
 
   it('a held question with NO PreToolUse stash is classified as an approval and keeps pendingId', () => {

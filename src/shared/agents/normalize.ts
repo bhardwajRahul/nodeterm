@@ -1,6 +1,6 @@
 import type { AgentId } from './config'
 import type { ObservedClaudeAccount } from '../types'
-import { isSafeToolName, type HeldPermission } from './permission-answer'
+import { ASK_USER_QUESTION_TOOL, isSafeToolName, readQuestions, type HeldPermission } from './permission-answer'
 
 export type AgentState = 'working' | 'waiting' | 'blocked' | 'done'
 
@@ -176,6 +176,8 @@ interface ClaudePayload {
     cron?: string
     /** Bash only: the task was launched as a background shell (`run_in_background: true`). */
     run_in_background?: boolean
+    /** AskUserQuestion only — read through `readQuestions`, never trusted as typed. */
+    questions?: unknown
   }
   tool_response?: {
     status?: string
@@ -195,6 +197,14 @@ interface ClaudePayload {
  */
 export function isAsyncSubagentLaunch(r: { status?: string; isAsync?: boolean } | undefined): boolean {
   return r?.status === 'async_launched' || r?.isAsync === true
+}
+
+/** The held request a PermissionRequest names. A question also carries its exact texts (the same
+ *  reader the question card uses), so a surface offers controls only on the card it belongs to. */
+function heldOf(pendingId: string, toolName: string, p: ClaudePayload): HeldPermission {
+  if (toolName !== ASK_USER_QUESTION_TOOL) return { pendingId, toolName }
+  const qs = readQuestions(p.tool_input)
+  return qs ? { pendingId, toolName, questions: qs.map((q) => q.question) } : { pendingId, toolName }
 }
 
 export function normalizeClaude(env: RawHookEnvelope): NormalizedAgentEvent | null {
@@ -327,9 +337,7 @@ export function normalizeClaude(env: RawHookEnvelope): NormalizedAgentEvent | nu
       lastMessage: p.last_assistant_message,
       // Deterministic-approval ticket (present only when the wait-branch of the managed hook ran).
       ...(p.nodeterm_pending_id ? { pendingId: p.nodeterm_pending_id } : {}),
-      ...(p.nodeterm_pending_id && isSafeToolName(tool)
-        ? { held: { pendingId: p.nodeterm_pending_id, toolName: tool } }
-        : {})
+      ...(p.nodeterm_pending_id && isSafeToolName(tool) ? { held: heldOf(p.nodeterm_pending_id, tool, p) } : {})
     }
   }
   if (ev === 'Notification') {

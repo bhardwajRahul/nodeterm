@@ -2535,6 +2535,12 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   kept to one line with emphasis escaped), degrading to no body (the old chip) on any other shape;
   ChatPanel shows a part with a body as an expanded "Plan"/"Question" card through `MarkdownText` with its result under it, and
   the find-bar index (`linesFrom`) indexes the body in full like assistant text.
+  **Answer controls on those cards (2026-09).** Only the card the node's `held` ticket belongs to gets
+  controls (`lib/chatAnswer.ts` `activeAnswerCard`: newest unanswered card of the held tool; a question
+  also needs identical question texts — `held.questions` and the card's `questions` come from the ONE
+  `readQuestions`), and only while the pane is in a dialog state. They send a `PermissionAnswer`
+  through `answerPermission`; a refusal is a quiet retryable error pointing at the terminal. Plan's
+  default button is `restore` — never auto. See docs/hook-reply-approvals.md.
 - **Subagent visualization** (agents in `SUBAGENT_CAPABLE`) — `subagent-start`/`subagent-end`
   normalized events (from Claude's `PreToolUse`/`PostToolUse` on tool `Agent`/`Task`, correlated
   by `tool_use_id`) drive a transient `state/agentNodes.ts` store. Claude launches subagents

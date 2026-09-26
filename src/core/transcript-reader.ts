@@ -9,6 +9,7 @@ import { transcriptRootFor } from './claude-accounts-core'
 import { linkedClaudeConfigDirFor } from './claude-config-dir'
 import { platform } from './platform'
 import { toolBody } from './chat-tool-body'
+import { ASK_USER_QUESTION_TOOL, readQuestions } from '../shared/agents/permission-answer'
 
 // Transcript root for a managed account (its `projects` dir) or the system default
 // (`~/.claude/projects` when accountId is undefined — bit-for-bit the old behavior). Impure
@@ -178,6 +179,10 @@ function parseChatRecords(
           }
           const body = toolBody(part.name, c.input)
           if (body) part.body = body
+          if (part.name === ASK_USER_QUESTION_TOOL) {
+            const questions = readQuestions(c.input)
+            if (questions) part.questions = questions
+          }
           if (paged && typeof c.id === 'string' && c.id) part.id = c.id
           parts.push(part)
           if (c.id) toolById.set(c.id, part)

@@ -3311,7 +3311,7 @@ body,
   border-radius: 6px;
   cursor: pointer;
 }
-.term-chat__answer-btn:hover:not(:disabled) {
+.term-chat__answer-btn:hover:not([aria-disabled='true']) {
   background: rgba(var(--tint-rgb), 0.12);
 }
 .term-chat__answer-btn--primary {
@@ -3319,13 +3319,20 @@ body,
   background: var(--accent);
   border-color: transparent;
 }
-.term-chat__answer-btn--primary:hover:not(:disabled) {
+.term-chat__answer-btn--primary:hover:not([aria-disabled='true']) {
   background: var(--accent);
   filter: brightness(1.1);
 }
-.term-chat__answer-btn:disabled {
+.term-chat__answer-btn[aria-disabled='true'] {
   opacity: 0.5;
   cursor: default;
+}
+.term-chat__answer-q[aria-disabled='true'] {
+  opacity: 0.7;
+}
+.term-chat__answer-hint {
+  font-size: 11px;
+  color: var(--danger);
 }
 .term-chat__answer-btn:focus-visible,
 .term-chat__answer-option input:focus-visible {

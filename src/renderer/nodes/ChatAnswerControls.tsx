@@ -3,6 +3,7 @@ import type { ChatQuestion, PermissionAnswer } from '@shared/agents/permission-a
 import {
   CHAT_ANSWER_TEXT_MAX,
   PLAN_CHOICES,
+  answerTooLong,
   emptySelection,
   planReviseAnswer,
   questionAnswerFrom,
@@ -21,6 +22,10 @@ import {
  * "Sent" cannot outlive the hold), and on a refusal (`false`: an expired hold, a ticket core has no
  * record of, a hook script too old to read it) or a rejected call, one line that names the terminal
  * path — the TUI dialog is still up and still works — with every control usable again for a retry.
+ *
+ * Unavailable controls are `aria-disabled` + guarded, never `disabled`: a disabled element drops
+ * keyboard focus to <body> the moment the user activates it, which strands a keyboard user outside
+ * the card exactly when the status line is telling them what happened.
  */
 
 type SubmitStatus = 'idle' | 'sending' | 'sent' | 'error'
@@ -100,13 +105,22 @@ export function PlanAnswerControls({ onSubmit, agentLabel, chip }: Common) {
               type="button"
               className={`term-chat__answer-btn${i === 0 ? ' term-chat__answer-btn--primary' : ''}`}
               title={c.hint}
-              disabled={busy}
-              onClick={() => void submit({ kind: 'plan', mode: c.mode })}
+              aria-disabled={busy}
+              onClick={() => {
+                if (!busy) void submit({ kind: 'plan', mode: c.mode })
+              }}
             >
               {c.label}
             </button>
           ))}
-          <button type="button" className="term-chat__answer-btn" disabled={busy} onClick={() => setRevising(true)}>
+          <button
+            type="button"
+            className="term-chat__answer-btn"
+            aria-disabled={busy}
+            onClick={() => {
+              if (!busy) setRevising(true)
+            }}
+          >
             Revise…
           </button>
         </div>
@@ -121,7 +135,7 @@ export function PlanAnswerControls({ onSubmit, agentLabel, chip }: Common) {
             rows={3}
             maxLength={CHAT_ANSWER_TEXT_MAX}
             value={feedback}
-            disabled={busy}
+            readOnly={busy}
             autoFocus
             onChange={(e) => setFeedback(e.target.value)}
             onKeyDown={(e) => {
@@ -132,10 +146,21 @@ export function PlanAnswerControls({ onSubmit, agentLabel, chip }: Common) {
             }}
           />
           <div className="term-chat__answer-row">
-            <button type="submit" className="term-chat__answer-btn term-chat__answer-btn--primary" disabled={busy || !revise}>
+            <button
+              type="submit"
+              className="term-chat__answer-btn term-chat__answer-btn--primary"
+              aria-disabled={busy || !revise}
+            >
               Send feedback
             </button>
-            <button type="button" className="term-chat__answer-btn" disabled={busy} onClick={() => setRevising(false)}>
+            <button
+              type="button"
+              className="term-chat__answer-btn"
+              aria-disabled={busy}
+              onClick={() => {
+                if (!busy) setRevising(false)
+              }}
+            >
               Cancel
             </button>
           </div>
@@ -150,10 +175,15 @@ export function QuestionAnswerControls({ questions, onSubmit, agentLabel, chip }
   const { status, submit, busy } = useSubmit(onSubmit)
   const [sel, setSel] = useState<QuestionSelection[]>(() => emptySelection(questions))
   const answer = questionAnswerFrom(questions, sel)
+  const tooLong = answerTooLong(questions, sel)
   const baseId = useId()
 
-  const update = (i: number, next: Partial<QuestionSelection>) =>
+  // Guarded rather than disabled (see the file header): after a send the choices stay focusable but
+  // no longer change.
+  const update = (i: number, next: Partial<QuestionSelection>) => {
+    if (busy) return
     setSel((s) => s.map((x, k) => (k === i ? { ...x, ...next } : x)))
+  }
 
   const onFormSubmit = (e: FormEvent) => {
     e.preventDefault()
@@ -168,7 +198,7 @@ export function QuestionAnswerControls({ questions, onSubmit, agentLabel, chip }
         const otherId = `${name}-other`
         const noOptions = q.options.length === 0
         return (
-          <fieldset key={q.question} className="term-chat__answer-q" disabled={busy}>
+          <fieldset key={q.question} className="term-chat__answer-q" aria-disabled={busy}>
             <legend className="term-chat__answer-label">{q.question}</legend>
             {q.options.map((o) => (
               <label key={o.label} className="term-chat__answer-option">
@@ -208,6 +238,7 @@ export function QuestionAnswerControls({ questions, onSubmit, agentLabel, chip }
               placeholder={noOptions ? 'Your answer' : 'Type another answer'}
               id={otherId}
               maxLength={CHAT_ANSWER_TEXT_MAX}
+              readOnly={busy}
               value={s.otherText}
               // Typing is choosing "Other" (on a single choice it replaces the picked option).
               onChange={(e) =>
@@ -218,10 +249,21 @@ export function QuestionAnswerControls({ questions, onSubmit, agentLabel, chip }
         )
       })}
       <div className="term-chat__answer-row">
-        <button type="submit" className="term-chat__answer-btn term-chat__answer-btn--primary" disabled={busy || !answer}>
+        <button
+          type="submit"
+          className="term-chat__answer-btn term-chat__answer-btn--primary"
+          aria-disabled={busy || !answer}
+        >
           Submit
         </button>
       </div>
+      {tooLong && (
+        // The only incomplete state that is not visible on its own: the ticked labels plus the typed
+        // "Other" text are sent as ONE answer, and it is that joined text core caps.
+        <div className="term-chat__answer-hint">
+          {`The answer to “${tooLong}” is too long — keep it under ${CHAT_ANSWER_TEXT_MAX.toLocaleString('en-US')} characters, labels included.`}
+        </div>
+      )}
       <StatusLine status={status} agentLabel={agentLabel} chip={chip} />
     </form>
   )

@@ -5,6 +5,8 @@ import {
   PLAN_CHOICES,
   activeAnswerCard,
   emptySelection,
+  CHAT_ANSWER_TEXT_MAX,
+  answerTooLong,
   planReviseAnswer,
   questionAnswerFrom,
   toggleLabel
@@ -130,6 +132,28 @@ describe('questionAnswerFrom — UI selection → the structured answer core val
     expect(questionAnswerFrom([SINGLE], sel)).toBeNull()
     expect(questionAnswerFrom([FREE], emptySelection([FREE]))).toBeNull()
   })
+  it('the JOINED multi-select + Other text is what the cap applies to (core refuses past it)', () => {
+    const sel = emptySelection([MULTI])
+    sel[0].labels = ['Desktop', 'Server']
+    sel[0].other = true
+    // The typed text alone fits; "Desktop, Server, " pushes the joined answer over the cap.
+    sel[0].otherText = 'x'.repeat(CHAT_ANSWER_TEXT_MAX - 5)
+    expect(questionAnswerFrom([MULTI], sel)).toBeNull()
+    expect(answerTooLong([MULTI], sel)).toBe('Which surfaces?')
+    // Just under: sent, and nothing is flagged.
+    sel[0].otherText = 'x'.repeat(CHAT_ANSWER_TEXT_MAX - 'Desktop, Server, '.length)
+    expect(questionAnswerFrom([MULTI], sel)).not.toBeNull()
+    expect(answerTooLong([MULTI], sel)).toBeNull()
+  })
+
+  it('a single-choice "Other" over the cap is flagged too', () => {
+    const sel = emptySelection([SINGLE])
+    sel[0].other = true
+    sel[0].otherText = 'y'.repeat(CHAT_ANSWER_TEXT_MAX + 1)
+    expect(questionAnswerFrom([SINGLE], sel)).toBeNull()
+    expect(answerTooLong([SINGLE], sel)).toBe('Pick one?')
+  })
+
   it('a label that is not one of the question\'s options is never sent', () => {
     const sel = emptySelection([SINGLE])
     sel[0].labels = ['Z']

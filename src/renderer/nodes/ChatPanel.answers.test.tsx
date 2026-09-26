@@ -81,6 +81,8 @@ const type = async (el: HTMLInputElement | HTMLTextAreaElement, text: string): P
   })
 }
 const sent = (): AnswerPermissionPayload => answerPermission.mock.calls.at(-1)![0] as AnswerPermissionPayload
+/** Unavailable controls are aria-disabled (they keep keyboard focus), never `disabled`. */
+const off = (b: HTMLButtonElement): boolean => b.disabled || b.getAttribute('aria-disabled') === 'true'
 const statusText = (): string => host.querySelector('.term-chat__answer-status')?.textContent ?? ''
 
 beforeEach(() => {
@@ -116,8 +118,12 @@ describe('plan card', () => {
     await click(button(card, 'Approve · accept edits'))
     expect(sent()).toEqual({ nodeId: NODE, pendingId: 'n-p-1', answer: { kind: 'plan', mode: 'acceptEdits' } })
     expect(statusText()).toBe('Sent — waiting for Claude Code…')
-    // Sent: the controls lock, so a second click cannot send a second answer.
-    expect(button(card, 'Approve · previous mode').disabled).toBe(true)
+    // Sent: the controls lock, so a second click cannot send a second answer…
+    expect(off(button(card, 'Approve · previous mode'))).toBe(true)
+    await click(button(card, 'Approve · previous mode'))
+    expect(answerPermission).toHaveBeenCalledTimes(1)
+    // …and they stay FOCUSABLE (aria-disabled, not disabled), so keyboard focus is not dropped to <body>.
+    expect(button(card, 'Approve · accept edits').disabled).toBe(false)
   })
 
   it('"Revise…" opens a feedback box; Send feedback sends plan-revise', async () => {
@@ -125,7 +131,7 @@ describe('plan card', () => {
     await mount([planMsg(0)])
     await click(button(cards()[0], 'Revise…'))
     const ta = cards()[0].querySelector('textarea') as HTMLTextAreaElement
-    expect(button(cards()[0], 'Send feedback').disabled).toBe(true) // nothing typed yet
+    expect(off(button(cards()[0], 'Send feedback'))).toBe(true) // nothing typed yet
     await type(ta, '  split step 2  ')
     await click(button(cards()[0], 'Send feedback'))
     expect(sent().answer).toEqual({ kind: 'plan-revise', message: 'split step 2' })
@@ -138,7 +144,7 @@ describe('plan card', () => {
     await click(button(cards()[0], 'Approve · previous mode'))
     expect(statusText()).toMatch(/^Couldn't send — answer in the terminal/)
     expect(statusText()).not.toContain('Sent')
-    expect(button(cards()[0], 'Approve · previous mode').disabled).toBe(false)
+    expect(off(button(cards()[0], 'Approve · previous mode'))).toBe(false)
     // Retry works.
     await click(button(cards()[0], 'Approve · previous mode'))
     expect(answerPermission).toHaveBeenCalledTimes(2)
@@ -202,9 +208,9 @@ describe('question card', () => {
     await mount([askMsg(0, [SINGLE])])
     expect(radio('A').type).toBe('radio')
     const submit = button(cards()[0], 'Submit')
-    expect(submit.disabled).toBe(true)
+    expect(off(submit)).toBe(true)
     await click(radio('B'))
-    expect(submit.disabled).toBe(false)
+    expect(off(submit)).toBe(false)
     await click(submit)
     expect(sent()).toEqual({
       nodeId: NODE,
@@ -238,10 +244,53 @@ describe('question card', () => {
     await hold('waiting', held(['Pick one?', 'Which surfaces?']))
     await mount([askMsg(0, [SINGLE, MULTI])])
     await click(radio('A'))
-    expect(button(cards()[0], 'Submit').disabled).toBe(true)
+    expect(off(button(cards()[0], 'Submit'))).toBe(true)
     await click(radio('Server'))
     await click(button(cards()[0], 'Submit'))
     expect(sent().answer).toEqual({ kind: 'question', answers: { 'Pick one?': 'A', 'Which surfaces?': ['Server'] } })
+  })
+
+  it('multi choice + "Other": ticked labels and the typed text go as ONE free-text answer', async () => {
+    await hold('waiting', held(['Which surfaces?']))
+    await mount([askMsg(0, [MULTI])])
+    expect(radio('Other').type).toBe('checkbox')
+    await click(radio('Server'))
+    await type(host.querySelector('.term-chat__answer-text') as HTMLInputElement, 'Watch')
+    expect(radio('Other').checked).toBe(true)
+    expect(radio('Server').checked).toBe(true) // a multi choice keeps its ticks
+    await click(button(cards()[0], 'Submit'))
+    expect(sent().answer).toEqual({
+      kind: 'question',
+      answers: { 'Which surfaces?': 'Server, Watch' },
+      freeText: ['Which surfaces?']
+    })
+  })
+
+  it('multi choice + "Other" whose JOINED answer is over the cap: Submit is off and says why', async () => {
+    const { CHAT_ANSWER_TEXT_MAX } = await import('../lib/chatAnswer')
+    await hold('waiting', held(['Which surfaces?']))
+    await mount([askMsg(0, [MULTI])])
+    await click(radio('Desktop'))
+    await click(radio('Server'))
+    // The typed part alone fits the field's own maxLength; with the labels it does not.
+    await type(host.querySelector('.term-chat__answer-text') as HTMLInputElement, 'x'.repeat(CHAT_ANSWER_TEXT_MAX - 5))
+    expect(off(button(cards()[0], 'Submit'))).toBe(true)
+    expect(host.querySelector('.term-chat__answer-hint')?.textContent).toContain('too long')
+    await click(button(cards()[0], 'Submit'))
+    expect(answerPermission).not.toHaveBeenCalled()
+  })
+
+  it('a question with no options is answered by its text field alone', async () => {
+    const FREE: ChatQuestion = { question: 'Name?', multiSelect: false, options: [] }
+    await hold('waiting', held(['Name?']))
+    await mount([askMsg(0, [FREE])])
+    expect(host.querySelectorAll('.term-chat__answer-option')).toHaveLength(0) // no radios, no "Other"
+    const field = host.querySelector('.term-chat__answer-text') as HTMLInputElement
+    expect(field.getAttribute('aria-label')).toBe('Your answer: Name?')
+    expect(off(button(cards()[0], 'Submit'))).toBe(true)
+    await type(field, ' Ada ')
+    await click(button(cards()[0], 'Submit'))
+    expect(sent().answer).toEqual({ kind: 'question', answers: { 'Name?': 'Ada' }, freeText: ['Name?'] })
   })
 
   it('a card whose questions do not match the held request stays read-only', async () => {

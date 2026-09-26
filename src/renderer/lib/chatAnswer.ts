@@ -76,13 +76,39 @@ export function toggleLabel(labels: readonly string[], label: string, on: boolea
 }
 
 /**
- * The structured answer for a set of selections, or null while any question is unanswered or a
- * pick is not one of that question's own options (never sent — core would refuse it anyway).
+ * The free text a question's answer would carry, or null when it is not a free-text answer. ONE
+ * definition, so the text that is capped is the text that is sent: on a multi choice with "Other" it
+ * is the ticked labels (in option order) plus the typed text, joined with ", " — the TUI's own
+ * multi-select format, and one string because core carries one free-text answer per question.
+ * Core caps THAT string, so capping only the typed part let a long answer through to a refusal.
+ */
+function freeTextOf(q: ChatQuestion, sel: QuestionSelection): string | null {
+  if (!sel.other && q.options.length > 0) return null
+  const typed = sel.otherText.trim()
+  const labels = q.options.map((o) => o.label).filter((l) => sel.labels.includes(l))
+  return q.multiSelect && labels.length && typed ? [...labels, typed].join(', ') : typed
+}
+
+/** The first question whose free-text answer is over the shared cap (core would refuse it), or null.
+ *  The controls name it instead of leaving Submit disabled without a reason. */
+export function answerTooLong(
+  questions: readonly ChatQuestion[],
+  selections: readonly QuestionSelection[]
+): string | null {
+  for (let i = 0; i < questions.length && i < selections.length; i++) {
+    const text = freeTextOf(questions[i], selections[i])
+    if (text !== null && text.length > CHAT_ANSWER_TEXT_MAX) return questions[i].question
+  }
+  return null
+}
+
+/**
+ * The structured answer for a set of selections, or null while any question is unanswered, a pick is
+ * not one of that question's own options, or a free-text answer is over the cap (never sent — core
+ * would refuse it anyway).
  *
  *  - single choice → the label; multi choice → its labels in OPTION order;
- *  - "Other" (or a question with no options) → the typed text, listed in `freeText`. On a multi
- *    choice the ticked labels come first, joined with ", " — the TUI's own multi-select format —
- *    because core carries one free-text string per question, not labels plus text.
+ *  - "Other" (or a question with no options) → `freeTextOf`, listed in `freeText`.
  */
 export function questionAnswerFrom(
   questions: readonly ChatQuestion[],
@@ -97,11 +123,10 @@ export function questionAnswerFrom(
     const known = q.options.map((o) => o.label)
     if (!sel.labels.every((l) => known.includes(l))) return null
     const labels = known.filter((l) => sel.labels.includes(l))
-    const typed = sel.otherText.trim()
-    const wantsText = sel.other || q.options.length === 0
-    if (wantsText) {
-      if (!typed || typed.length > CHAT_ANSWER_TEXT_MAX) return null
-      answers[q.question] = q.multiSelect && labels.length ? [...labels, typed].join(', ') : typed
+    const text = freeTextOf(q, sel)
+    if (text !== null) {
+      if (!text || text.length > CHAT_ANSWER_TEXT_MAX) return null
+      answers[q.question] = text
       freeText.push(q.question)
     } else if (q.multiSelect) {
       if (labels.length === 0) return null

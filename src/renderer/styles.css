@@ -1566,6 +1566,14 @@ body,
 .term-node--glass .term-node__body {
   background: transparent;
 }
+/* Camera move (pan / zoom), every appearance: promote the viewport so the compositor scales the
+   already-rastered layer instead of re-rasterising every node's DOM at each intermediate zoom.
+   MEASURED (12 WebGL terminals, 60 Hz wheel zoom, M2): 41–48% → 30–36% total CPU, GPU process
+   22% → 15%. Only WHILE moving: the class is removed 150 ms after the move settles so text
+   re-rasters sharp at the final scale — a permanent will-change would leave it blurry. */
+.canvas-camera-moving .react-flow__viewport {
+  will-change: transform;
+}
 /* The blur is re-rasterised for every glass node on every frame of a pan/zoom (their backdrop
    moves under them). With Keep blur while moving OFF (settings.glassBlurWhileMoving), Canvas marks
    the flow wrapper while the camera moves; the tint stays, and the tint alone is what keeps text at

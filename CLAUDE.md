@@ -5229,6 +5229,17 @@ glow that says "this agent finished while you were away" is still on screen when
 look for it. `hud.css` is deliberately excluded: the notch HUD's window is never focused, so the
 shared gate would freeze it permanently rather than while nobody is looking.
 
+**A camera move freezes the viewport's raster scale, and only for the move.** `onCanvasMoveStart`
+adds `canvas-camera-moving` to the flow wrapper in EVERY appearance (before the glass-only
+early-return — it is not a glass feature), and `.canvas-camera-moving .react-flow__viewport` sets
+`will-change: transform`, so the compositor scales the already-rastered layer instead of
+re-rasterising every node's DOM at each intermediate zoom. MEASURED (12 WebGL terminals, 60 Hz
+synthetic wheel zoom, M2, production build): **41–48% → 30–36%** total CPU, GPU process **22% →
+15%**. It MUST stay transient: `onCanvasMoveEnd` removes the class 150 ms after the move settles so
+text re-rasters sharp at the final scale — a permanent `will-change` on the viewport leaves every
+terminal blurry after a zoom. `canvas/camera-moving.test.ts` pins both halves (the rule is scoped
+to the class, and no bare `.react-flow__viewport` rule carries `will-change`).
+
 ## Remote access (phone relay) — free, not Pro
 
 - Phone relay remote access ("Reach this Mac from anywhere") is a **Core (free) feature** as of

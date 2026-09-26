@@ -49,6 +49,7 @@ import { canChat } from '@shared/agents/config'
 import { effectiveAccountId } from '../../lib/accountChip'
 import { useSettings } from '../../state/settings'
 import { chipFor, commandTooltip } from '../../lib/keybindingOverrides'
+import { ChatPanelFallback } from '../../nodes/ChatPanelFallback'
 
 // Code-split exactly like the canvas node's: ChatPanel carries the markdown renderer, and the
 // card modal must not pull it onto the board's first paint.
@@ -532,7 +533,7 @@ export function CardModal({ session, columnTitle, board, onChangeBoard, onClose,
                         re-attach — and its grid does not resize — every time the view flips. */}
                     {mdOpen &&
                       (useChat ? (
-                        <Suspense fallback={null}>
+                        <Suspense fallback={<ChatPanelFallback />}>
                           <ChatPanel
                             key={session.id}
                             nodeId={session.id}

@@ -2543,6 +2543,17 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   `readQuestions`), and only while the pane is in a dialog state. They send a `PermissionAnswer`
   through `answerPermission`; a refusal is a quiet retryable error pointing at the terminal. Plan's
   default button is `restore` — never auto. See docs/hook-reply-approvals.md.
+  **The thread look (2026-09-26, claude.ai-style)**: the user's message is a neutral rounded bubble
+  on the right (`term-chat__bubble`, a tint lift — never the blue accent), the assistant's is plain
+  full-width text with no bubble. One quiet action row per assistant TURN (`lib/chatThread.ts`
+  `assistantTurnEnds` — a turn is a run of consecutive assistant lines, so a tool-heavy turn gets one
+  row, not one per tool call), hidden until hover/focus and always shown on the latest turn: Copy (the
+  turn's TEXT parts as markdown source, through `window.nodeTerminal.clipboard` — the app channel,
+  which never rejects and bridges to execCommand in the browser) and a relative time from the new
+  optional `ChatMessage.at` (epoch ms from claude's ISO `timestamp`, set by the core parser on BOTH
+  the legacy and paged paths; absent when the line states none — never a made-up time). One
+  60-second `now` tick in ChatPanel drives every row's label. No thumbs / read-aloud / retry (no
+  terminal equivalent). `.term-chat__text` stays the markdown sink the link guard scopes to.
   **The composer (2026-09-26, claude.ai-style)** is one rounded box — textarea on top, a toolbar
   under it: "+" attach on the left; model label, muted effort label and a mic on the right (pure
   decisions in `lib/chatComposer.ts`). Four rules: (1) **attach = paths in the DRAFT, resolved the

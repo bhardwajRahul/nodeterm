@@ -2830,6 +2830,12 @@ export interface ChatMessage {
    * the legacy read and on grok (whose reader does not page).
    */
   key?: number
+  /**
+   * When the transcript line was written (epoch ms, from claude's ISO `timestamp`). Set on BOTH
+   * read paths; absent when the line states none (grok, older records). The ⌘M thread shows it as a
+   * relative time under an assistant message.
+   */
+  at?: number
 }
 
 /** A `tool_result` whose `tool_use` was not in the same page (it lives in an OLDER one). */

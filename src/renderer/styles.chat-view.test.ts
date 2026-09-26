@@ -54,3 +54,26 @@ describe('nt-spinner', () => {
     expect(mine).not.toMatch(/\.nt-spinner\s*{[^}]*(display:\s*none|visibility:\s*hidden|opacity:\s*0;)/)
   })
 })
+
+describe('⌘M thread: claude.ai look', () => {
+  it('the user message is a neutral rounded bubble on the right — not the blue accent', () => {
+    const user = ruleBody('.term-chat__msg--user')
+    expect(user).toMatch(/align-self:\s*flex-end;/)
+    expect(user).not.toMatch(/--accent/)
+    expect(user).toMatch(/max-width:\s*80%;/)
+    expect(user).toMatch(/border-radius:\s*\d+px;/)
+    expect(user).toMatch(/background:/)
+  })
+
+  it('the assistant message has no bubble: full width, no fill, roomy line height', () => {
+    const a = ruleBody('.term-chat__msg--assistant')
+    expect(a).toMatch(/max-width:\s*none;/)
+    expect(a).toMatch(/background:\s*none;/)
+    expect(a).toMatch(/line-height:\s*1\.6/)
+  })
+
+  it('the action row is hidden until hover/focus, and always shown on the latest turn', () => {
+    expect(ruleBody('.term-chat__actions')).toMatch(/opacity:\s*0;/)
+    expect(CSS).toMatch(/\.term-chat__msg:hover \.term-chat__actions,\s*\n?\s*\.term-chat__actions:focus-within,\s*\n?\s*\.term-chat__actions--latest\s*{[^}]*opacity:\s*1;/)
+  })
+})

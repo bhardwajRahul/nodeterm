@@ -3131,10 +3131,10 @@ body,
 .term-chat__msgs {
   flex: 1 1 auto;
   overflow-y: auto;
-  padding: 10px;
+  padding: 12px 14px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 14px;
   /* Allow text selection / Cmd+C (React Flow nodes are non-selectable by default). */
   user-select: text;
   -webkit-user-select: text;
@@ -3188,23 +3188,84 @@ body,
 .term-chat__older--start {
   color: rgba(var(--tint-rgb), 0.22);
 }
+/* The thread, claude.ai-style: the USER's message is a neutral rounded bubble on the right (a lift
+   of whatever the panel sits on, so it reads on every terminal theme — never the blue accent); the
+   ASSISTANT's is plain full-width text on the panel with no bubble, roomy line height and paragraph
+   spacing, and a quiet action row under each turn (ChatTurnActions). */
 .term-chat__msg {
-  max-width: 92%;
-  padding: 8px 10px;
-  border-radius: 10px;
   font-size: 13px;
   line-height: 1.5;
   word-break: break-word;
+  min-width: 0;
 }
 .term-chat__msg--user {
   align-self: flex-end;
-  background: var(--accent);
-  color: #fff;
+  max-width: 80%;
+  padding: 8px 12px;
+  border-radius: 14px;
+  background: rgba(var(--tint-rgb), 0.09);
+  color: var(--text-strong);
 }
 .term-chat__msg--assistant {
-  align-self: flex-start;
-  background: rgba(var(--tint-rgb), 0.06);
+  align-self: stretch;
+  max-width: none;
+  padding: 0 2px;
+  background: none;
   color: rgba(var(--tint-rgb), 0.92);
+  line-height: 1.6;
+}
+.term-chat__msg--assistant .term-chat__text p {
+  margin: 0 0 0.75em;
+}
+/* Consecutive lines of one assistant turn (text, each tool call, more text) sit close together:
+   they are one answer, and the thread's gap is for the space BETWEEN turns. */
+.term-chat__msg--assistant + .term-chat__msg--assistant {
+  margin-top: -8px;
+}
+.term-chat__actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  min-height: 22px;
+  font-size: 11px;
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.term-chat__msg:hover .term-chat__actions,
+.term-chat__actions:focus-within,
+.term-chat__actions--latest {
+  opacity: 1;
+}
+.term-chat__action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  min-width: 22px;
+  padding: 0 4px;
+  color: inherit;
+  background: none;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.term-chat__action svg {
+  width: 14px;
+  height: 14px;
+}
+.term-chat__action:hover {
+  color: var(--text-strong);
+  background: rgba(var(--tint-rgb), 0.08);
+}
+.term-chat__action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.term-chat__time {
+  padding: 0 4px;
+  white-space: nowrap;
 }
 .term-chat__text > :first-child {
   margin-top: 0;
@@ -3219,15 +3280,19 @@ body,
   overflow-x: auto;
 }
 .term-chat__text a {
-  color: inherit;
+  color: var(--accent);
   text-decoration: underline;
+  text-underline-offset: 2px;
 }
+/* A tool call in the unbubbled assistant flow: a quiet chip on the panel itself (a light tint and a
+   hairline), not a dark box nested in a bubble that is no longer there. */
 .term-chat__tool {
   margin: 4px 0;
-  padding: 4px 6px;
+  padding: 4px 8px;
   font-size: 12px;
-  background: rgba(0, 0, 0, 0.25);
-  border-radius: 6px;
+  background: rgba(var(--tint-rgb), 0.04);
+  border: 1px solid rgba(var(--tint-rgb), 0.08);
+  border-radius: 8px;
 }
 .term-chat__tool summary {
   display: flex;
@@ -3269,10 +3334,11 @@ body,
    but open and full-width; no max-height, so a long plan scrolls with the thread. */
 .term-chat__tool-card {
   margin: 6px 0;
-  padding: 8px 10px;
-  background: rgba(0, 0, 0, 0.25);
+  padding: 10px 12px;
+  background: rgba(var(--tint-rgb), 0.04);
+  border: 1px solid rgba(var(--tint-rgb), 0.08);
   border-left: 2px solid var(--accent);
-  border-radius: 6px;
+  border-radius: 8px;
   min-width: 0;
 }
 .term-chat__tool-card-title {

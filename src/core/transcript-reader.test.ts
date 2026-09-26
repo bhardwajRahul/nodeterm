@@ -245,6 +245,35 @@ describe('parseChatWindow — pure window parsing', () => {
   })
 })
 
+describe('message time (`at`, from the line\'s ISO `timestamp`)', () => {
+  const stamped = (role: 'user' | 'assistant', text: string, timestamp: unknown): string =>
+    role === 'user'
+      ? jl({ type: 'user', timestamp, message: { content: text } })
+      : jl({ type: 'assistant', timestamp, message: { content: [{ type: 'text', text }] } })
+  const iso = '2026-09-25T19:37:29.097Z'
+  const ms = Date.parse(iso)
+
+  it('the paged path carries it on user and assistant messages', () => {
+    const r = parseChatWindow(Buffer.from(stamped('user', 'q', iso) + stamped('assistant', 'a', iso)), 0)
+    expect(r.messages.map((m) => m.at)).toEqual([ms, ms])
+  })
+
+  it('the legacy path carries it too (additive: nothing else changes)', () => {
+    const msgs = parseChatMessages((stamped('user', 'q', iso) + stamped('assistant', 'a', iso)).split('\n'))
+    expect(msgs).toEqual([
+      { role: 'user', parts: [{ kind: 'text', text: 'q' }], at: ms },
+      { role: 'assistant', parts: [{ kind: 'text', text: 'a' }], at: ms }
+    ])
+  })
+
+  it('omits it when the line has none, or one that is not a date (never a made-up time)', () => {
+    const msgs = parseChatMessages(
+      (said('user', 'none') + stamped('user', 'bad', 'yesterday') + stamped('user', 'num', 12345)).split('\n')
+    )
+    expect(msgs.map((m) => 'at' in m)).toEqual([false, false, false])
+  })
+})
+
 describe('readChatWindow — byte windows read from a real file', () => {
   let dir: string
   afterEach(() => {

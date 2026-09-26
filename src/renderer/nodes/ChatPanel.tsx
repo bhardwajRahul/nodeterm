@@ -25,6 +25,8 @@ import { activeAnswerCard } from '../lib/chatAnswer'
 import { PlanAnswerControls, QuestionAnswerControls } from './ChatAnswerControls'
 import type { PermissionAnswer } from '@shared/agents/permission-answer'
 import { ChatComposer } from './ChatComposer'
+import { ChatTurnActions } from './ChatTurnActions'
+import { assistantTurnEnds } from '../lib/chatThread'
 
 // Memoized bubble: marked+DOMPurify re-ran for EVERY message on each ChatPanel render (each
 // turn-finish reload, each keystroke re-render). Text is stable per message, so cache per text.
@@ -537,6 +539,17 @@ export function ChatPanel({
   // the action instead of promising a chord that never fires.
   const mdChip = chipFor('node.toggleMarkdown')
 
+  // The thread's claude.ai look (lib/chatThread.ts): one action row per assistant TURN, keyed by
+  // the turn's last message. `now` is ONE clock for every row's relative time, ticked once a minute
+  // (a per-row timer would be a timer per turn for a label that changes once a minute).
+  const turnEnds = useMemo(() => assistantTurnEnds(messages), [messages])
+  const latestTurnEnd = useMemo(() => Math.max(-1, ...turnEnds.keys()), [turnEnds])
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 60_000)
+    return () => clearInterval(t)
+  }, [])
+
   // A tail that yielded no message but has history behind it (all-metadata records, or a window a
   // single huge record filled) is STILL LOADING — the panel pages back by itself from here. Saying
   // "No conversation yet." there, until the older page landed, told the user a session with a
@@ -603,7 +616,10 @@ export function ChatPanel({
           // Keyed by the source line's byte offset: a prepended page does not re-key (and so does
           // not re-render) a single existing bubble. Unkeyed ones (grok, the optimistic sent
           // bubble) fall back to their position.
-          <div key={m.key !== undefined ? `k${m.key}` : `i${i}`} className={`term-chat__msg term-chat__msg--${m.role}`}>
+          <div
+            key={m.key !== undefined ? `k${m.key}` : `i${i}`}
+            className={`term-chat__msg term-chat__msg--${m.role}${m.role === 'user' ? ' term-chat__bubble' : ''}`}
+          >
             {m.parts.map((p, j) =>
               p.kind === 'text' ? (
                 <MarkdownText key={j} text={p.text} />
@@ -649,6 +665,14 @@ export function ChatPanel({
                   {p.result && <pre className="term-chat__tool-result">{p.result}</pre>}
                 </details>
               )
+            )}
+            {turnEnds.has(i) && (
+              <ChatTurnActions
+                copyText={turnEnds.get(i)!.copyText}
+                at={turnEnds.get(i)!.at}
+                now={now}
+                latest={i === latestTurnEnd}
+              />
             )}
           </div>
         ))}

@@ -77,3 +77,28 @@ describe('⌘M thread: claude.ai look', () => {
     expect(CSS).toMatch(/\.term-chat__msg:hover \.term-chat__actions,\s*\n?\s*\.term-chat__actions:focus-within,\s*\n?\s*\.term-chat__actions--latest\s*{[^}]*opacity:\s*1;/)
   })
 })
+
+describe('the shared .term-chat__input (plan "Revise…", question "Other") keeps a visible field', () => {
+  it('the base rule is a bordered, padded, tinted field', () => {
+    const base = ruleBody('.term-chat__input')
+    expect(base).toMatch(/padding:\s*8px;/)
+    expect(base).toMatch(/border:\s*1px solid/)
+    expect(base).toMatch(/border-radius:\s*8px;/)
+    expect(base).toMatch(/background:\s*rgba\(var\(--tint-rgb\)/)
+  })
+
+  it('it shows focus (the accent border) — a borderless reset here was an a11y regression', () => {
+    expect(ruleBody('.term-chat__input:focus')).toMatch(/border-color:\s*var\(--accent\);/)
+  })
+
+  it('only the COMPOSER textarea drops its border (the box around it owns the focus ring)', () => {
+    const composer = ruleBody('.term-chat__composer-input')
+    expect(composer).toMatch(/border:\s*none;/)
+    expect(composer).toMatch(/background:\s*transparent;/)
+    expect(ruleBody('.term-chat__composer:focus-within')).toMatch(/border-color:\s*var\(--accent\);/)
+  })
+
+  it('the last paragraph of an assistant message has no trailing margin (specificity over the generic rule)', () => {
+    expect(ruleBody('.term-chat__msg--assistant .term-chat__text > p:last-child')).toMatch(/margin-bottom:\s*0;/)
+  })
+})

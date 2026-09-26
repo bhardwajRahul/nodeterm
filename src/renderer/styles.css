@@ -3217,6 +3217,9 @@ body,
 .term-chat__msg--assistant .term-chat__text p {
   margin: 0 0 0.75em;
 }
+.term-chat__msg--assistant .term-chat__text > p:last-child {
+  margin-bottom: 0;
+}
 /* Consecutive lines of one assistant turn (text, each tool call, more text) sit close together:
    they are one answer, and the thread's gap is for the space BETWEEN turns. */
 .term-chat__msg--assistant + .term-chat__msg--assistant {
@@ -3531,7 +3534,30 @@ body,
   border-color: var(--accent);
   border-style: dashed;
 }
+/* A text field in the ⌘M view: the plan "Revise…" textarea and the question "Other" input
+   (ChatAnswerControls) — a visible, bordered field with an accent border on focus. */
 .term-chat__input {
+  box-sizing: border-box;
+  width: 100%;
+  resize: none;
+  padding: 8px;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text-strong);
+  background: rgba(var(--tint-rgb), 0.06);
+  border: 1px solid rgba(var(--tint-rgb), 0.12);
+  border-radius: 8px;
+}
+.term-chat__input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.term-chat__input:disabled {
+  opacity: 0.5;
+}
+/* The COMPOSER's textarea only (its own class): borderless inside the rounded box, which owns the
+   focus ring (`.term-chat__composer:focus-within`). Scoped so the answer fields above keep theirs. */
+.term-chat__composer-input {
   box-sizing: border-box;
   width: 100%;
   resize: none;
@@ -3543,10 +3569,10 @@ body,
   border: none;
   border-radius: 0;
 }
-.term-chat__input:focus {
+.term-chat__composer-input:focus {
   outline: none;
 }
-.term-chat__input:disabled {
+.term-chat__composer-input:disabled {
   opacity: 0.5;
 }
 .term-chat__toolbar {

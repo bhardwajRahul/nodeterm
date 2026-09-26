@@ -29,9 +29,9 @@ export interface ContextElement {
 }
 
 /** The ⌘M chat composer's box (nodes/ChatComposer.tsx carries this attribute). Matched
- *  STRUCTURALLY, never by the textarea's class: `term-chat__input` is shared with the plan
- *  "Revise…" textarea and the question "Other" input (ChatAnswerControls), which sit OUTSIDE the
- *  box — and dictation fired there typed into the hidden pane showing that very dialog. */
+ *  STRUCTURALLY, never by a class: a class-keyed rule once matched the plan "Revise…" textarea and
+ *  the question "Other" input (ChatAnswerControls, OUTSIDE the box), and dictation fired there went
+ *  to the hidden pane showing that very dialog. */
 export const CHAT_COMPOSER_BOX_SELECTOR = '[data-chat-composer-id]'
 
 /** Focus inside the ⌘M composer box: a TYPING target like any other, with one exception the

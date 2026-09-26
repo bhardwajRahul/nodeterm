@@ -259,7 +259,7 @@ export function ChatComposer({
       >
         <textarea
           ref={inputRef}
-          className="term-chat__input"
+          className="term-chat__composer-input"
           value={value}
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={onKeyDown}

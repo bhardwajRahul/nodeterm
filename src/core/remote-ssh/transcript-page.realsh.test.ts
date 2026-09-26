@@ -30,7 +30,7 @@ const write = (name: string, body: Buffer | string): string => {
   return p
 }
 const page = (p: string, before: number | null, maxBytes: number) =>
-  parseTranscriptPage(run(transcriptPageCommand(p, before, maxBytes)), maxBytes)
+  parseTranscriptPage(run(transcriptPageCommand(p, before, maxBytes)), before, maxBytes)
 
 // Expected window, computed independently of the shell: [windowStart - lookbehind, end).
 const expected = (file: Buffer, before: number | null, maxBytes: number) => {

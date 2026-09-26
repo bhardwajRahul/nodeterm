@@ -58,7 +58,7 @@ export class RemoteFile {
     const { code, stdout } = await this.run(childArgs(ref.conn, ref.controlPath,
       transcriptPageCommand(ref.path, before, maxBytes)))
     if (code !== 0) throw new Error('Remote transcript command failed')
-    return parseTranscriptPage(stdout, maxBytes)
+    return parseTranscriptPage(stdout, before, maxBytes)
   }
 
   async readFrom(ref: RemoteFileRef, offset: number): Promise<{ text: string; newOffset: number }> {

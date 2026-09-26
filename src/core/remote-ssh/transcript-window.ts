@@ -106,9 +106,20 @@ export interface TranscriptPage {
   size: number
 }
 
-/** Strict parser for `transcriptPageCommand`'s reply: anything malformed, short or failed throws. */
-export function parseTranscriptPage(stdout: string, maxBytes: number): TranscriptPage {
+/**
+ * Strict parser for `transcriptPageCommand`'s reply: anything malformed, short or failed throws.
+ *
+ * `before` / `maxBytes` are what was ASKED, and the reply must be exactly that window: the header's
+ * range is re-derived from them and the reported size (`end = min(before ?? size, size)`, `start =
+ * end - maxBytes - 1` or 0) rather than trusted. A reply for some other window — a desynced master,
+ * a stale command — would otherwise splice the wrong bytes into the panel under keys (absolute
+ * offsets) that look perfectly valid.
+ */
+export function parseTranscriptPage(stdout: string, before: number | null, maxBytes: number): TranscriptPage {
   const nl = stdout.indexOf('\n')
+  // Explicit: with no newline, `slice(0, -1)` would drop the reply's last character and could
+  // leave a well-formed header behind ('0 0 00' → '0 0 0', an "empty page").
+  if (nl < 0) throw new Error('Invalid transcript page header')
   const match = /^(\d+) (\d+) (\d+)$/.exec(stdout.slice(0, nl))
   if (!match) throw new Error('Invalid transcript page header')
   const [start, count, size] = match.slice(1).map(Number)
@@ -116,6 +127,10 @@ export function parseTranscriptPage(stdout: string, maxBytes: number): Transcrip
   const cap = maxBytes + 1
   if (![start, count, size].every(Number.isSafeInteger) || count > cap || start + count > size) {
     throw new Error('Invalid transcript page range')
+  }
+  const end = before === null ? size : Math.min(before, size)
+  if (start + count !== end || start !== (end > maxBytes ? end - maxBytes - 1 : 0)) {
+    throw new Error('Invalid transcript page range: not the window asked for')
   }
   const data = decodeFramedBlocks(stdout.slice(nl + 1), start, count, cap)
   return { data, start, end: start + count, size }

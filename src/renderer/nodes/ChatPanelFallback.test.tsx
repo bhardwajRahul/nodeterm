@@ -31,6 +31,13 @@ describe('ChatPanelFallback', () => {
     expect(shell.querySelector(':scope > .term-chat__msgs')).toBeTruthy()
   })
 
+  it('shows the caller\'s own title and hint (the closed-transcript dialog: its title, "Esc to close")', () => {
+    act(() => root.render(<ChatPanelFallback title="Closed session" hint="Esc to close" />))
+    const bar = host.querySelector('.term-chat__bar') as HTMLElement
+    expect(bar.firstElementChild?.textContent).toBe('Closed session')
+    expect(bar.querySelector('.term-chat__hint')?.textContent).toBe('Esc to close')
+  })
+
   it('says it is loading, with a spinner, inside a polite status region', () => {
     act(() => root.render(<ChatPanelFallback />))
     const status = host.querySelector('[role="status"]') as HTMLElement
@@ -41,11 +48,12 @@ describe('ChatPanelFallback', () => {
   })
 })
 
-// Both mount sites of the lazy ChatPanel (canvas node + kanban card modal) must show the shell
-// while the chunk loads; `fallback={null}` is what left the ⌘M face blank.
+// Every mount site of the lazy ChatPanel (canvas node, kanban card modal, closed-transcript dialog)
+// must show the shell while the chunk loads; `fallback={null}` is what left the ⌘M face blank.
 describe.each([
   ['TerminalNode.tsx', join(__dirname, 'TerminalNode.tsx')],
-  ['CardModal.tsx', join(__dirname, '../components/kanban/CardModal.tsx')]
+  ['CardModal.tsx', join(__dirname, '../components/kanban/CardModal.tsx')],
+  ['ClosedTranscriptDialog.tsx', join(__dirname, '../components/ClosedTranscriptDialog.tsx')]
 ])('%s lazy ChatPanel', (_name, file) => {
   const src = readFileSync(file, 'utf8').replace(/\r\n/g, '\n')
   it('suspends into ChatPanelFallback, never into nothing', () => {

@@ -19,6 +19,7 @@ import { CHAT_LIVE_RELOAD_MIN_MS, CHAT_OPTIMISTIC_WORKING_MS } from '../lib/chat
 interface Pending {
   page: ChatTranscriptPageRequest | undefined
   resolve: (r: ChatTranscriptResult) => void
+  reject: (e: unknown) => void
 }
 
 const { pending, session, sendText } = vi.hoisted(() => {
@@ -30,7 +31,7 @@ const { pending, session, sendText } = vi.hoisted(() => {
     _n?: string,
     _g?: string,
     page?: ChatTranscriptPageRequest
-  ) => new Promise<ChatTranscriptResult>((resolve) => pending.push({ page, resolve }))
+  ) => new Promise<ChatTranscriptResult>((resolve, reject) => pending.push({ page, resolve, reject }))
   const sendText = vi.fn(async (_id: string, _t: string) => true as const)
   const session = { api: { chat: { readTranscript }, pty: { sendText } } }
   return { pending, session, sendText }
@@ -185,6 +186,79 @@ describe('ChatPanel live progress', () => {
     expect(bubbles()).toEqual(['older', 'tail'])
     expect(pending).toHaveLength(3) // …then served once it landed
     expect(pending[2].page).toEqual({ maxBytes: CHAT_TAIL_PAGE_BYTES })
+  })
+
+  it('the live read the send itself triggers does not erase the prompt the transcript lacks yet', async () => {
+    await hook('done')
+    await render()
+    await settle(0, { messages: [say(0, 'hello')], olderCursor: 0 })
+    await advance(CHAT_LIVE_RELOAD_MIN_MS * 2) // the initial read is long past: the next one runs at once
+    const ta = host.querySelector('textarea') as HTMLTextAreaElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(ta, 'do it')
+      ta.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    })
+    expect(bubbles()).toEqual(['hello', 'do it'])
+    await hook('working', true) // UserPromptSubmit
+    expect(pending).toHaveLength(2)
+    // The agent has not written the prompt line yet.
+    await settle(1, { messages: [say(0, 'hello')], olderCursor: 0 })
+    expect(bubbles()).toEqual(['hello', 'do it'])
+    // Once it has, exactly one copy — the transcript's.
+    await hook('working')
+    await advance(CHAT_LIVE_RELOAD_MIN_MS)
+    await settle(2, {
+      messages: [say(0, 'hello'), { role: 'user', key: 50, parts: [{ kind: 'text', text: 'do it' }] }],
+      olderCursor: 0
+    })
+    expect(bubbles()).toEqual(['hello', 'do it'])
+    expect(host.querySelectorAll('.term-chat__msg--user')).toHaveLength(1)
+  })
+
+  it('a live read leaves a failed older page\'s retry row alone', async () => {
+    await hook('working', true)
+    await render()
+    await settle(0, { messages: [say(1000, 'tail')], olderCursor: 1000 })
+    const el = host.querySelector('.term-chat__msgs') as HTMLDivElement
+    Object.defineProperty(el, 'scrollTop', { configurable: true, get: () => 0, set: () => {} })
+    await act(async () => {
+      el.dispatchEvent(new Event('scroll'))
+    })
+    await act(async () => pending[1].reject(new Error('host blip')))
+    expect(host.querySelector('.term-chat__older--error')).not.toBeNull()
+    await hook('working')
+    await advance(CHAT_LIVE_RELOAD_MIN_MS)
+    expect(pending).toHaveLength(3)
+    expect(pending[2].page).toEqual({ maxBytes: CHAT_TAIL_PAGE_BYTES })
+    expect(host.querySelector('.term-chat__older--error')).not.toBeNull()
+    await settle(2, { messages: [say(1000, 'tail'), say(2000, 'more')], olderCursor: 1000 })
+    expect(host.querySelector('.term-chat__older--error')).not.toBeNull()
+    expect(pending).toHaveLength(3) // no re-armed older fetch
+  })
+
+  it('a live read never flips an empty state to "Loading conversation…"', async () => {
+    await hook('working', true)
+    await render()
+    await settle(0, { found: false })
+    expect(host.textContent).toContain('No transcript found')
+    await hook('working')
+    await advance(CHAT_LIVE_RELOAD_MIN_MS)
+    expect(pending).toHaveLength(2)
+    expect(host.textContent).not.toContain('Loading conversation…')
+    expect(host.textContent).toContain('No transcript found')
+  })
+
+  it('a surface that cannot read transcripts takes no live reads', async () => {
+    await hook('working', true)
+    await render()
+    await act(async () => pending[0].reject(Object.assign(new Error('nope'), { code: 'E_UNSUPPORTED' })))
+    expect(host.textContent).toContain("Transcripts can't be read on this surface.")
+    await hook('working')
+    await advance(CHAT_LIVE_RELOAD_MIN_MS * 3)
+    expect(pending).toHaveLength(1)
   })
 
   it('done clears the row and takes the final reload', async () => {

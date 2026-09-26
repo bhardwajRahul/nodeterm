@@ -2500,6 +2500,11 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   tail — throttled (`CHAT_LIVE_RELOAD_MIN_MS`, trailing read guaranteed), single-flight, never for a
   hidden panel or document (`lib/chatLive.ts`). The trigger is `agentStatus.onHookEvent`, NOT a
   `stateAt` selector: same-state events refresh `stateAt` in place and notify no zustand subscriber.
+  A live read passes `applyTail(…, {carryUnconfirmed})`, which keeps the trailing unkeyed optimistic
+  send until the tail holds a matching user line (the send's own UserPromptSubmit read races the
+  transcript write); it never resets a failed older page or flips an empty state to "Loading…".
+  Gap: the panel reads the DEFAULT agent-status store, the only one Canvas's hook listener writes, so
+  a relay tab gets neither the row nor live reads until relay status is routed per session.
   **Plan and question bodies (2026-09).** A tool call is normally a collapsed chip (`name` + a
   ≤200-char `arg`), which left an `ExitPlanMode` plan — the full markdown the terminal shows as
   "Here is Claude's plan" — and an `AskUserQuestion` question + options unreadable in ⌘M, the one

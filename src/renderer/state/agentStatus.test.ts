@@ -376,6 +376,22 @@ describe('onHookEvent — a per-node pulse for EVERY hook event, same-state ones
     expect(cb).toHaveBeenCalledTimes(2)
   })
 
+  it('a throwing listener neither aborts setState nor starves the next listener', () => {
+    const id = nid()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const bad = useAgentStatus.getState().onHookEvent(id, () => {
+      throw new Error('boom')
+    })
+    const good = vi.fn()
+    const unsub = useAgentStatus.getState().onHookEvent(id, good)
+    expect(() => useAgentStatus.getState().setState(id, 'working', 'claude', true)).not.toThrow()
+    expect(good).toHaveBeenCalledOnce()
+    expect(useAgentStatus.getState().byId[id]?.state).toBe('working')
+    bad()
+    unsub()
+    warn.mockRestore()
+  })
+
   it('sees the store already updated when it fires', () => {
     const id = nid()
     let seen: string | undefined

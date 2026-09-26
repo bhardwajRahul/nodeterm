@@ -506,7 +506,16 @@ export function createAgentStatusSession(
   const hookEventSubs = new Map<string, Set<() => void>>()
   const pulse = (id: string): void => {
     const subs = hookEventSubs.get(id)
-    if (subs) for (const cb of [...subs]) cb()
+    if (!subs) return
+    for (const cb of [...subs]) {
+      // Runs inside Canvas's hook-event handler, after the store write: one throwing listener must
+      // neither abort that handler nor starve the listeners after it.
+      try {
+        cb()
+      } catch (e) {
+        console.warn('[agentStatus] onHookEvent listener threw', e)
+      }
+    }
   }
 
   const store = create<AgentStatusStore>((set) => ({

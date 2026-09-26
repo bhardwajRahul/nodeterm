@@ -114,6 +114,9 @@ export function ChatPanel({
   const threadRef = useRef(thread)
   threadRef.current = thread
   const [loadState, setLoadState] = useState<LoadState>('loading')
+  // Mirror for `attemptLive`, which runs from timers and settles, outside any render.
+  const loadStateRef = useRef(loadState)
+  loadStateRef.current = loadState
   // The older-page fetch (scroll-up paging): its own in-flight flag and token, and a failed page
   // gets a retry row instead of retrying on every scroll event.
   const [olderState, setOlderState] = useState<'idle' | 'loading' | 'error'>('idle')
@@ -182,18 +185,25 @@ export function ChatPanel({
   const liveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const attemptLiveRef = useRef<() => void>(() => {})
 
-  const load = useCallback(() => {
+  // `live` = a read driven by a hook event while the agent works (see `attemptLive`), as opposed to
+  // the first open, the turn-end reload and ↻. A live read is background refresh: it keeps
+  // unconfirmed sends on screen (`carryUnconfirmed`), leaves a failed older page's retry row alone
+  // (clearing it would re-arm a failing fetch every interval) and never flips the empty state to
+  // "Loading…" (which would strobe on every hook event).
+  const load = useCallback((live = false) => {
     const token = ++reqRef.current
     olderReqRef.current++
     olderInFlightRef.current = false
-    // Cancelling an older fetch (or clearing its error) removes a row ABOVE the viewport: anchor it
-    // like any other change up there, or the view jumps by the row's height.
-    if (olderStateRef.current !== 'idle') captureAnchor()
-    setOlderState('idle')
+    if (!live) {
+      // Cancelling an older fetch (or clearing its error) removes a row ABOVE the viewport: anchor
+      // it like any other change up there, or the view jumps by the row's height.
+      if (olderStateRef.current !== 'idle') captureAnchor()
+      setOlderState('idle')
+    }
     setTailLoading(true)
     tailInFlightRef.current = true
     lastTailStartRef.current = Date.now()
-    setLoadState((s) => (s === 'ok' ? s : 'loading')) // a reload never blanks a rendered thread
+    if (!live) setLoadState((s) => (s === 'ok' ? s : 'loading')) // a reload never blanks a rendered thread
     // `nodeId` is what lets an SSH-project node resolve on its host; the rejection branch is what
     // keeps a surface that cannot read transcripts (Server Edition, relay tab) from silently
     // presenting itself as an empty conversation. Only the newest TAIL window is read — older
@@ -221,7 +231,7 @@ export function ChatPanel({
           setLoadState('missing')
           return
         }
-        setThread((t) => applyTail(t, identity, res))
+        setThread((t) => applyTail(t, identity, res, { carryUnconfirmed: live }))
         setLoadState('ok')
       },
       (e: unknown) => {
@@ -305,6 +315,11 @@ export function ChatPanel({
   // runs from timers and settles, long after the render that defined it.
   attemptLiveRef.current = () => {
     if (!livePendingRef.current) return
+    // This surface cannot read transcripts at all (relay tab): every live read would be refused.
+    if (loadStateRef.current === 'unsupported') {
+      livePendingRef.current = false
+      return
+    }
     const el = msgsRef.current
     const plan = planLiveReload({
       working: useAgentStatus.getState().byId[nodeId]?.state === 'working',
@@ -332,7 +347,7 @@ export function ChatPanel({
         return
       case 'run':
         livePendingRef.current = false
-        load()
+        load(true)
     }
   }
 
@@ -463,7 +478,8 @@ export function ChatPanel({
       setReadonly(true)
       return
     }
-    // Optimistic: show the prompt immediately; the next load() reconciles from the transcript.
+    // Optimistic: show the prompt immediately. A live read keeps it until the transcript carries it
+    // (`carryUnconfirmed`); the turn-end reload / ↻ reconcile from the transcript outright.
     justSentRef.current = true
     setThread((t) => ({ ...t, messages: [...t.messages, { role: 'user', parts: [{ kind: 'text', text }] }] }))
     setOptimistic(true)
@@ -503,7 +519,7 @@ export function ChatPanel({
         <span className="term-chat__bar-end">
           <button
             className="term-chat__refresh"
-            onClick={load}
+            onClick={() => load()}
             title="Reload conversation"
             aria-label="Reload conversation"
           >
@@ -542,7 +558,7 @@ export function ChatPanel({
               <div className="term-chat__empty-detail">{EMPTY_TEXT[loadState].detail}</div>
             )}
             {loadState !== 'unsupported' && loadState !== 'ok' && (
-              <button className="term-chat__retry" onClick={load}>
+              <button className="term-chat__retry" onClick={() => load()}>
                 Retry
               </button>
             )}

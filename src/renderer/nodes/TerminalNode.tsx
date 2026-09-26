@@ -5691,19 +5691,25 @@ export function TerminalNode({
             state leaves `blocked` (the store clears pendingId). */}
         {status?.state === 'blocked' && status?.pendingId && (
           <span className="term-node__approve nodrag">
-            <button
-              className="term-node__approve-btn term-node__approve-btn--allow"
-              title="Approve this permission request"
-              onClick={() =>
-                void window.nodeTerminal.answerPermission({
-                  nodeId: id,
-                  pendingId: status.pendingId!,
-                  decision: 'allow'
-                })
-              }
-            >
-              ✓ Approve
-            </button>
+            {/* A plain allow cannot answer a question (Claude drops it and the hook keeps holding),
+                so Approve is hidden when THIS ticket is a held AskUserQuestion (a concurrent child
+                approval keeps its own Approve); Deny still declines it. A held ExitPlanMode keeps Approve: the hook maps a plain allow to "restore the pre-plan
+                mode" (docs/hook-reply-approvals.md). */}
+            {!(status.held?.toolName === 'AskUserQuestion' && status.held.pendingId === status.pendingId) && (
+              <button
+                className="term-node__approve-btn term-node__approve-btn--allow"
+                title="Approve this permission request"
+                onClick={() =>
+                  void window.nodeTerminal.answerPermission({
+                    nodeId: id,
+                    pendingId: status.pendingId!,
+                    decision: 'allow'
+                  })
+                }
+              >
+                ✓ Approve
+              </button>
+            )}
             <button
               className="term-node__approve-btn term-node__approve-btn--deny"
               title="Deny this permission request"

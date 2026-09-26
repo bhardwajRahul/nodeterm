@@ -305,7 +305,7 @@ describe('the verified evidence for a transition', () => {
     // argument list: nothing else in the suite would notice if the last argument disappeared.
     const src = readFileSync(resolve(__dirname, '../../..', 'src/renderer/canvas/Canvas.tsx'), 'utf8')
     expect(src).toMatch(
-      /cs\.setState\(\s*e\.nodeId,\s*e\.state,\s*e\.agentId,\s*e\.newTurn,\s*e\.pendingId,\s*e\.verified,\s*e\.errored\s*\)/
+      /cs\.setState\(\s*e\.nodeId,\s*e\.state,\s*e\.agentId,\s*e\.newTurn,\s*e\.pendingId,\s*e\.verified,\s*e\.errored,\s*e\.held\s*\)/
     )
   })
 
@@ -348,5 +348,35 @@ describe('the verified evidence for a transition', () => {
     } finally {
       delete (globalThis as unknown as { localStorage?: unknown }).localStorage
     }
+  })
+})
+
+describe('held permission request (structured answers)', () => {
+  const plan = { pendingId: 'n-1-1', toolName: 'ExitPlanMode' }
+  const question = { pendingId: 'n-2-2', toolName: 'AskUserQuestion' }
+
+  it('is kept on blocked AND on waiting (a held picker is broadcast as waiting), cleared on leaving', () => {
+    const s = useAgentStatus.getState()
+    const id = nid()
+    s.setState(id, 'blocked', 'claude', false, 'n-1-1', true, false, plan)
+    expect(useAgentStatus.getState().byId[id].held).toEqual(plan)
+    const q = nid()
+    s.setState(q, 'waiting', 'claude', false, undefined, true, false, question)
+    expect(useAgentStatus.getState().byId[q].held).toEqual(question)
+    expect(useAgentStatus.getState().byId[q].pendingId).toBeUndefined() // approve/deny stays off
+    s.setState(id, 'working', 'claude', false)
+    expect(useAgentStatus.getState().byId[id].held).toBeUndefined()
+  })
+
+  it('a NEW held request on a same-state re-assert retargets (breaks the in-place fast path)', () => {
+    const s = useAgentStatus.getState()
+    const id = nid()
+    s.setState(id, 'waiting', 'claude', false, undefined, true, false, question)
+    const again = { pendingId: 'n-3-3', toolName: 'AskUserQuestion' }
+    s.setState(id, 'waiting', 'claude', false, undefined, true, false, again)
+    expect(useAgentStatus.getState().byId[id].held).toEqual(again)
+    // A re-assert with no held info keeps the current one.
+    s.setState(id, 'waiting', 'claude', false)
+    expect(useAgentStatus.getState().byId[id].held).toEqual(again)
   })
 })

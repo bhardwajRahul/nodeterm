@@ -141,6 +141,14 @@ lane unaffected.
   from a background header: only the active SSH project is git-routable. SSH headers observe
   Source refreshes instead.
 
+- **Hook decision JSON is built in core, never in the renderer or the script.** To answer a held
+  Claude permission request with more than `allow`/`deny` (a plan's follow-on mode, a question's
+  answers), send a `PermissionAnswer` through `answerPermission`; `core/agents/permission-decision.ts`
+  validates it against the pending request file on the agent's host and writes the JSON. The managed
+  hook prints a JSON answer only after a strict prefix/size/one-line check, so a new decision shape
+  must pass `isBoundedAnswerContent` or it is silently ignored. Answer content never goes on an argv.
+  See `docs/hook-reply-approvals.md`.
+
 - **Never call the user's machine a Mac in user-visible copy.** Use `thisMachine()` /
   `thisMachineCap()` / `machineNoun()` from `src/renderer/lib/machineName.ts` — "this Mac" on
   macOS, "this PC" on Windows, "this computer" elsewhere and in any Server Edition browser tab

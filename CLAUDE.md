@@ -2176,6 +2176,24 @@ terminal opens keep their existing identity policy; Server Edition still require
 for every control verb. Legacy mobile/SSH callers must present this instance’s node token for
 command-bearing opens; this does not add a human-confirm dialog or change mobile transport APIs.
 
+- **Hook-reply answers: plans and questions** (`core/agents/permission-decision.ts`, full write-up in
+  **`docs/hook-reply-approvals.md`**) — the managed hook holds a Claude `PermissionRequest` and polls an
+  answer file. For `ExitPlanMode` / `AskUserQuestion` (`requiresUserInteraction`) Claude **DROPS a bare
+  allow**, so the answer must carry `updatedInput`: plan = `{}` (+ optional session `setMode
+  acceptEdits|default`, never `auto`), question = the request's own `questions` + `answers`. Rules a
+  refactor must not undo: (1) **only core builds decision JSON**, from the pending request file on the
+  agent's host (never renderer-echoed questions), validating every field; (2) the script prints only the
+  fixed words' decisions or a file that passes the strict prefix/size/one-line bound
+  (`isBoundedAnswerContent` is the TS twin — both writers refuse anything the script would ignore);
+  (3) answer content never rides an argv (the answered POST carries the decoded verb; SSH writes go on
+  stdin); (4) a plain `allow` maps to `updatedInput:{}` for a plan and is swallowed (hook keeps
+  holding) for a question — core refuses to write it and the header hides ✓ Approve for that ticket;
+  (5) these two tools hold 540 s (`PERM_WAIT_SECS_INTERACTIVE`) under the 600 s default command-hook
+  timeout our installers never override — except a subagent's request, whose dialog awaits the hook.
+  An old script on an SSH host ignores JSON answers (prints nothing → TUI answers). The renderer gets
+  `held: {pendingId, toolName}` on the event/store (kept while blocked OR waiting), separate from the
+  approve/deny `pendingId` the mirror strips from a question. Desktop local + SSH, Server Edition local;
+  relay unchanged; phone keeps `allow`/`deny` (its plan approve now works via the script mapping).
 - **Per-node hook identity** (`src/core/agents/node-auth-*.ts`, `node-token-*.ts`,
   `node-identity-policy.ts` — full write-up in **`docs/node-identity.md`**) — the shared bearer proves
   "a session on this machine", never *which* session, so every node also gets a capability derived

@@ -7,6 +7,7 @@ import type { CloneProgress } from './clone-url'
 import type { KeybindingOverrides, TerminalShortcutPolicy } from './keybindings'
 import type { NormalizedAgentEvent } from './agents/normalize'
 import type { PaneOwner } from './agents/pane-owner-predicate'
+import type { AnswerPermissionPayload } from './agents/permission-answer'
 import type { AgentId, AgentPermissionMode, BuiltinAgentId, PromptInjectionMode } from './agents/config'
 import type { ControlConfirmWaivers } from './control-confirm'
 import type { AgentMessageDeliverRequest, AgentMessageReply } from './agents/agent-messaging'
@@ -3749,8 +3750,14 @@ export interface NodeTerminalApi {
    *  (`~/.nodeterm/pending/<pendingId>.answer`) on the host the agent runs on — the LOCAL fs for a
    *  local project, or the remote host over the project's ControlMaster for an SSH project. Resolves
    *  `true` when the file was written, `false` on any failure (invalid pendingId, unknown node,
-   *  unsupported project, fs/exec error). */
-  answerPermission(payload: { nodeId: string; pendingId: string; decision: 'allow' | 'deny' }): Promise<boolean>
+   *  unsupported project, fs/exec error).
+   *
+   *  `decision` is the original contract and still works alone. An optional structured `answer`
+   *  (`PermissionAnswer`: approve a plan with a follow-on mode, send plan feedback, answer an
+   *  AskUserQuestion) wins over it; core validates it against the held request file on the agent's
+   *  host and refuses (`false`) when that request is gone or the answer does not fit it. A plain
+   *  `allow` on a held AskUserQuestion is refused too — Claude would drop it. */
+  answerPermission(payload: AnswerPermissionPayload): Promise<boolean>
   /** Notify the core that the user READ a finished (done) session on this surface (the unread-clear
    *  funnel calls it when the node's latest state is `done`). The core marks the node's done inbox
    *  event(s) resolved (phone Inbox archives the card) and re-sends an 'end' live-update so the

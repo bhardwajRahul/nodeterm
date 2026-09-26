@@ -1,5 +1,6 @@
 import type { AgentId } from './config'
 import type { ObservedClaudeAccount } from '../types'
+import { isSafeToolName, type HeldPermission } from './permission-answer'
 
 export type AgentState = 'working' | 'waiting' | 'blocked' | 'done'
 
@@ -69,6 +70,13 @@ export interface NormalizedAgentEvent {
   // concurrent parent picker cannot hide their approval tickets. The canvas keys the approve/deny
   // buttons off `pendingId`, which is now absent on a question. */
   askKind?: 'question' | 'approval'
+  /** blocked (Claude PermissionRequest with a held hook) only: the answer-file ticket PLUS the tool
+   *  being asked about, so a surface can tell a plan (ExitPlanMode) or question (AskUserQuestion)
+   *  hold from an ordinary permission and offer the right controls (a structured
+   *  `answerPermission`). Deliberately separate from `pendingId`, which the mirror STRIPS from a
+   *  question so no approve/deny button lights on a picker — this field lights nothing by itself.
+   *  Additive and optional: an older consumer ignores it. See docs/hook-reply-approvals.md. */
+  held?: HeldPermission
   // session
   sessionTitle?: string
   // session lifecycle phase: 'start' resets to idle, 'end' resets + clears loop/fan-out
@@ -318,7 +326,10 @@ export function normalizeClaude(env: RawHookEnvelope): NormalizedAgentEvent | nu
       ...(tool && tool !== 'AskUserQuestion' ? { askKind: 'approval' as const } : {}),
       lastMessage: p.last_assistant_message,
       // Deterministic-approval ticket (present only when the wait-branch of the managed hook ran).
-      ...(p.nodeterm_pending_id ? { pendingId: p.nodeterm_pending_id } : {})
+      ...(p.nodeterm_pending_id ? { pendingId: p.nodeterm_pending_id } : {}),
+      ...(p.nodeterm_pending_id && isSafeToolName(tool)
+        ? { held: { pendingId: p.nodeterm_pending_id, toolName: tool } }
+        : {})
     }
   }
   if (ev === 'Notification') {

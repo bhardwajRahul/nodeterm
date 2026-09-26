@@ -8,6 +8,7 @@ import type { TranscriptLine, ChatMessage, ChatPart, ChatCarriedToolResult } fro
 import { transcriptRootFor } from './claude-accounts-core'
 import { linkedClaudeConfigDirFor } from './claude-config-dir'
 import { platform } from './platform'
+import { toolBody } from './chat-tool-body'
 
 // Transcript root for a managed account (its `projects` dir) or the system default
 // (`~/.claude/projects` when accountId is undefined — bit-for-bit the old behavior). Impure
@@ -65,6 +66,10 @@ function linesFrom(raw: string): TranscriptLine[] {
       else if (c.type === 'tool_use') {
         const arg = toolArg(c.input)
         out.push({ role: 'tool', text: `$ ${c.name ?? 'tool'}${arg ? ` ${arg}` : ''}` })
+        // A plan / question is prose the user reads in full in the ⌘M view, so it is indexed in
+        // full too — the same treatment an assistant text block gets (the find bar splits lines).
+        const body = toolBody(c.name ?? '', c.input)
+        if (body) out.push({ role: 'tool', text: body })
       }
     }
   } else if (o.type === 'user' && Array.isArray(content)) {
@@ -171,6 +176,8 @@ function parseChatRecords(
             name: c.name ?? 'tool',
             arg: toolArg(c.input)
           }
+          const body = toolBody(part.name, c.input)
+          if (body) part.body = body
           if (paged && typeof c.id === 'string' && c.id) part.id = c.id
           parts.push(part)
           if (c.id) toolById.set(c.id, part)

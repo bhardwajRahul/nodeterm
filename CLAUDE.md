@@ -2494,6 +2494,15 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   store at send time, not only at render. Same trap as the in-place restart's `/exit`. The bar's ↻
   reloads on demand (beside the empty state's Retry), since a session whose hooks never report
   `working` never takes the turn-finish reload.
+  **Plan and question bodies (2026-09).** A tool call is normally a collapsed chip (`name` + a
+  ≤200-char `arg`), which left an `ExitPlanMode` plan — the full markdown the terminal shows as
+  "Here is Claude's plan" — and an `AskUserQuestion` question + options unreadable in ⌘M, the one
+  place meant for reading them. `core/chat-tool-body.ts` (pure) fills the tool part's optional
+  `body` for exactly those two tools (`input.plan`; the questions rendered as markdown), capped at
+  64K characters (never splitting an open code fence or a surrogate pair; model-authored labels are
+  kept to one line with emphasis escaped), degrading to no body (the old chip) on any other shape;
+  ChatPanel shows a part with a body as an expanded "Plan"/"Question" card through `MarkdownText` with its result under it, and
+  the find-bar index (`linesFrom`) indexes the body in full like assistant text.
 - **Subagent visualization** (agents in `SUBAGENT_CAPABLE`) — `subagent-start`/`subagent-end`
   normalized events (from Claude's `PreToolUse`/`PostToolUse` on tool `Agent`/`Task`, correlated
   by `tool_use_id`) drive a transient `state/agentNodes.ts` store. Claude launches subagents

@@ -5,7 +5,7 @@ import { useAgentStatus } from '../state/agentStatus'
 import { useSession } from '../session/session'
 import { chipFor } from '../lib/keybindingOverrides'
 import { chatComposerPlaceholder, chatSendRefusal } from '../lib/chatSendGate'
-import { chatAgentLabel, chatKeyAction, isNearBottom, shouldFollowOnLoad } from '../lib/chatPanel'
+import { chatAgentLabel, chatKeyAction, isNearBottom, shouldFollowOnLoad, toolCardTitle } from '../lib/chatPanel'
 import { useSettings } from '../state/settings'
 import {
   CHAT_OLDER_PAGE_BYTES,
@@ -462,6 +462,14 @@ export function ChatPanel({
                   <summary>Thinking</summary>
                   <MarkdownText text={p.text} />
                 </details>
+              ) : p.body ? (
+                // A plan / question is the content itself, not plumbing: shown expanded, in full,
+                // flowing with the thread (no inner scroll box). The answer stays under it.
+                <div key={j} className="term-chat__tool-card">
+                  <div className="term-chat__tool-card-title">{toolCardTitle(p.name)}</div>
+                  <MarkdownText text={p.body} />
+                  {p.result && <pre className="term-chat__tool-result">{p.result}</pre>}
+                </div>
               ) : (
                 <details key={j} className="term-chat__tool">
                   <summary>

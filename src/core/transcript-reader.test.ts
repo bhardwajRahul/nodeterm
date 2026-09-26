@@ -313,6 +313,60 @@ describe('readChatWindow — byte windows read from a real file', () => {
   })
 })
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// Tool bodies: a plan (ExitPlanMode) or a question (AskUserQuestion) is the content the user needs
+// to read, not a chip. Must ride BOTH the legacy and the paged parse, keys/carried results unchanged.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+const PLAN = '# Plan\n\n1. Read the plan\n2. Render it'
+const planUse = (id: string): string =>
+  jl({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id, name: 'ExitPlanMode', input: { plan: PLAN } }] }
+  })
+
+describe('tool bodies in the chat parse', () => {
+  it('the legacy parser attaches the plan as the tool body (and nothing else changes)', () => {
+    const msgs = parseChatMessages((planUse('p1') + toolResult('p1', 'User approved')).split('\n'))
+    expect(msgs).toEqual([
+      { role: 'assistant', parts: [{ kind: 'tool', name: 'ExitPlanMode', arg: '', body: PLAN, result: 'User approved' }] }
+    ])
+  })
+
+  it('the paged parser attaches the same body, keeps the id and the key', () => {
+    const r = parseChatWindow(Buffer.from(planUse('p1') + toolResult('p1', 'User approved')), 0)
+    expect(r.messages).toEqual([
+      {
+        role: 'assistant',
+        key: 0,
+        parts: [{ kind: 'tool', name: 'ExitPlanMode', arg: '', body: PLAN, id: 'p1', result: 'User approved' }]
+      }
+    ])
+  })
+
+  it('a plan whose answer lands in a newer page still carries its result by id', () => {
+    const older = planUse('p2')
+    const file = Buffer.from(older + toolResult('p2', 'User rejected'))
+    const split = Buffer.byteLength(older)
+    const newest = parseChatWindow(file.subarray(split - 1), split - 1)
+    expect(newest.unmatchedResults).toEqual([{ id: 'p2', result: 'User rejected' }])
+    const olderPage = parseChatWindow(file.subarray(0, split), 0)
+    expect(olderPage.messages[0].parts[0]).toMatchObject({ kind: 'tool', id: 'p2', body: PLAN })
+  })
+
+  it('a tool with no body keeps today\'s shape exactly (no body key)', () => {
+    const msgs = parseChatMessages(toolUse('t1', 'ls').split('\n'))
+    expect(msgs[0].parts[0]).toEqual({ kind: 'tool', name: 'Bash', arg: 'ls' })
+  })
+
+  it('the search index includes the plan text so the find bar can find it', () => {
+    const lines = parseTranscriptLines(planUse('p1'))
+    expect(lines).toEqual([
+      { role: 'tool', text: '$ ExitPlanMode' },
+      { role: 'tool', text: PLAN }
+    ])
+  })
+})
+
 // The title poll runs every 4–15 s per agent node, and each poll used to read + parse a 128 KB
 // tail. The name can only change when the transcript does, so an unchanged (size, mtime) must
 // answer from the cache without touching the file's bytes — while a /rename (the file grows)

@@ -127,6 +127,62 @@ describe('ChatPanel composer keys', () => {
 })
 
 describe('ChatPanel rendering', () => {
+  it('renders an ExitPlanMode plan as an expanded card with the markdown plan and the answer', async () => {
+    await render()
+    await resolveAt(0, [
+      {
+        role: 'assistant',
+        parts: [
+          { kind: 'tool', name: 'ToolSearch', arg: '' },
+          {
+            kind: 'tool',
+            name: 'ExitPlanMode',
+            arg: '',
+            body: '# Fix the chat\n\n1. Parse **the plan**\n2. Render it',
+            result: 'User approved the plan'
+          }
+        ]
+      }
+    ])
+    const card = host.querySelector('.term-chat__tool-card') as HTMLElement
+    expect(card).not.toBeNull()
+    // Expanded, not a collapsed disclosure.
+    expect(card.tagName).not.toBe('DETAILS')
+    expect(card.closest('details')).toBeNull()
+    expect(card.querySelector('.term-chat__tool-card-title')?.textContent).toBe('Plan')
+    const md = card.querySelector('.term-chat__text') as HTMLElement
+    expect(md.querySelector('h1')?.textContent).toBe('Fix the chat')
+    expect(md.querySelector('strong')?.textContent).toBe('the plan')
+    expect([...md.querySelectorAll('ol > li')].length).toBe(2)
+    expect(card.querySelector('.term-chat__tool-result')?.textContent).toBe('User approved the plan')
+    // A tool with no body is still today's collapsed chip.
+    const chip = host.querySelector('details.term-chat__tool') as HTMLDetailsElement
+    expect(chip.querySelector('.term-chat__tool-name')?.textContent).toBe('ToolSearch')
+    expect(host.querySelectorAll('details.term-chat__tool').length).toBe(1)
+  })
+
+  it('renders an AskUserQuestion question with its options as an expanded "Question" card', async () => {
+    await render()
+    await resolveAt(0, [
+      {
+        role: 'assistant',
+        parts: [
+          {
+            kind: 'tool',
+            name: 'AskUserQuestion',
+            arg: '',
+            body: '**Database**\n\nWhich database?\n\n- **Postgres** — Relational\n- **SQLite**'
+          }
+        ]
+      }
+    ])
+    const card = host.querySelector('.term-chat__tool-card') as HTMLElement
+    expect(card.querySelector('.term-chat__tool-card-title')?.textContent).toBe('Question')
+    const items = [...card.querySelectorAll('.term-chat__text li')].map((li) => li.textContent)
+    expect(items).toEqual(['Postgres — Relational', 'SQLite'])
+    expect(card.querySelector('.term-chat__tool-result')).toBeNull()
+  })
+
   it('renders a thinking part as a collapsed "Thinking" disclosure, not as answer text', async () => {
     await render()
     await resolveAt(0, [{ role: 'assistant', parts: [{ kind: 'thinking', text: 'pondering' }, { kind: 'text', text: 'answer' }] }])

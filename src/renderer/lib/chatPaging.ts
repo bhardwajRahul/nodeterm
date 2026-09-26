@@ -80,12 +80,25 @@ const carriedOf = (res: ChatTranscriptResult): Array<[string, string]> =>
  * - Otherwise merge by key: every loaded message older than the tail window is KEPT (older pages
  *   the user already scrolled through survive a turn end), everything from the window on is
  *   replaced by the tail — so nothing duplicates, and the optimistic unkeyed "just sent" bubble
- *   is dropped because the transcript now carries the real one.
+ *   is dropped because the transcript now carries the real one (a LIVE read passes
+ *   `carryUnconfirmed` and keeps it until the transcript does — see `unconfirmedSends`).
  * - Unless no loaded message reaches into the new window: then the turn wrote more than a whole
  *   window, and the bytes between what is rendered and the new window were never read. Stitching
  *   would hide them silently, so the thread resets to the tail and pages back normally.
  */
-export function applyTail(t: ChatThread, identity: string, res: ChatTranscriptResult): ChatThread {
+export function applyTail(
+  t: ChatThread,
+  identity: string,
+  res: ChatTranscriptResult,
+  opts: { carryUnconfirmed?: boolean } = {}
+): ChatThread {
+  const next = mergeTail(t, identity, res)
+  if (!opts.carryUnconfirmed || t.identity !== identity) return next
+  const carry = unconfirmedSends(t, res)
+  return carry.length === 0 ? next : { ...next, messages: [...next.messages, ...carry] }
+}
+
+function mergeTail(t: ChatThread, identity: string, res: ChatTranscriptResult): ChatThread {
   const cursor = res.olderCursor ?? null
   const fresh = (): ChatThread => ({
     identity,
@@ -106,6 +119,48 @@ export function applyTail(t: ChatThread, identity: string, res: ChatTranscriptRe
     olderCursor: t.olderCursor,
     pending: t.olderCursor === null ? new Map() : pruneLoaded(messages, attached.pending)
   }
+}
+
+const userText = (m: ChatMessage): string =>
+  m.parts
+    .map((p) => (p.kind === 'text' ? p.text : ''))
+    .join('')
+    .trim()
+
+/**
+ * The optimistic "just sent" bubbles a LIVE tail read must not drop. A live read fires on the very
+ * hook event the send caused (UserPromptSubmit), racing the agent's own transcript write — so the
+ * tail it returns often does not contain the prompt yet, and a plain merge (which keeps only keyed
+ * messages) would erase the user's own words for the rest of the turn.
+ *
+ * Carried: the thread's TRAILING unkeyed `user` messages (in a paged thread only sends are
+ * unkeyed; grok's thread is unkeyed throughout, but its whole-file read contains every prompt it
+ * rendered, so each one is matched and dropped). Each one is dropped when the new read contains a user message with
+ * the same trimmed text, ONE-FOR-ONE, and only among messages NEWER than anything the thread had
+ * keyed — an older identical "yes" already on screen must not confirm a new "yes".
+ *
+ * A non-live reload (turn end, ↻) never carries: by then the transcript holds the prompt, and a
+ * send whose transcript line never matches (a CLI that rewrites the prompt) must not stay duplicated.
+ */
+function unconfirmedSends(t: ChatThread, res: ChatTranscriptResult): ChatMessage[] {
+  const trailing: ChatMessage[] = []
+  for (let i = t.messages.length - 1; i >= 0; i--) {
+    const m = t.messages[i]
+    if (m.key !== undefined || m.role !== 'user') break
+    trailing.unshift(m)
+  }
+  if (trailing.length === 0) return []
+  let newest = -Infinity
+  for (const m of t.messages) if (m.key !== undefined && m.key > newest) newest = m.key
+  const available = res.messages
+    .filter((m) => m.role === 'user' && (m.key === undefined || m.key > newest))
+    .map(userText)
+  return trailing.filter((m) => {
+    const i = available.indexOf(userText(m))
+    if (i < 0) return true
+    available.splice(i, 1)
+    return false
+  })
 }
 
 /**

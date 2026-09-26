@@ -2515,6 +2515,17 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   store at send time, not only at render. Same trap as the in-place restart's `/exit`. The bar's ↻
   reloads on demand (beside the empty state's Retry), since a session whose hooks never report
   `working` never takes the turn-finish reload.
+  **Live progress (2026-09).** While the agent works, a `role=status` row closes the thread (the ONE
+  spinner + the placeholder's own "<agent> is working…"/"waiting for an answer" sentence; optimistic
+  right after a send, bounded by `CHAT_OPTIMISTIC_WORKING_MS`), and every hook event re-reads the
+  tail — throttled (`CHAT_LIVE_RELOAD_MIN_MS`, trailing read guaranteed), single-flight, never for a
+  hidden panel or document (`lib/chatLive.ts`). The trigger is `agentStatus.onHookEvent`, NOT a
+  `stateAt` selector: same-state events refresh `stateAt` in place and notify no zustand subscriber.
+  A live read passes `applyTail(…, {carryUnconfirmed})`, which keeps the trailing unkeyed optimistic
+  send until the tail holds a matching user line (the send's own UserPromptSubmit read races the
+  transcript write); it never resets a failed older page or flips an empty state to "Loading…".
+  Gap: the panel reads the DEFAULT agent-status store, the only one Canvas's hook listener writes, so
+  a relay tab gets neither the row nor live reads until relay status is routed per session.
   **Plan and question bodies (2026-09).** A tool call is normally a collapsed chip (`name` + a
   ≤200-char `arg`), which left an `ExitPlanMode` plan — the full markdown the terminal shows as
   "Here is Claude's plan" — and an `AskUserQuestion` question + options unreadable in ⌘M, the one

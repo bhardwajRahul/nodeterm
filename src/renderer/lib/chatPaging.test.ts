@@ -104,6 +104,56 @@ describe('applyTail', () => {
   })
 })
 
+describe('applyTail — unconfirmed optimistic sends (live reads)', () => {
+  const ID = 'id'
+  const base = (msgs: ChatMessage[], olderCursor: number | null = null): ChatThread => ({
+    identity: ID,
+    messages: msgs,
+    olderCursor,
+    pending: new Map()
+  })
+
+  it('a live read whose tail lacks the prompt keeps the optimistic bubble at the end', () => {
+    const t = base([say(0, 'q'), say(100, 'a'), say(undefined, 'do it', 'user')], 0)
+    const out = applyTail(t, ID, page([say(0, 'q'), say(100, 'a'), say(200, 'thinking…')], 0), { carryUnconfirmed: true })
+    expect(texts(out)).toEqual(['q', 'a', 'thinking…', 'do it'])
+    expect(out.messages.at(-1)?.key).toBeUndefined()
+  })
+
+  it('a live read whose tail HAS the prompt shows it exactly once (the transcript copy)', () => {
+    const t = base([say(0, 'q'), say(undefined, '  do it\n', 'user')], 0)
+    const out = applyTail(t, ID, page([say(0, 'q'), say(300, 'do it', 'user'), say(400, 'ok')], 0), { carryUnconfirmed: true })
+    expect(texts(out)).toEqual(['q', 'do it', 'ok'])
+    expect(out.messages.every((m) => m.key !== undefined)).toBe(true)
+  })
+
+  it('matches one-for-one, and never against a user line the thread already had', () => {
+    // An OLD "yes" (key 100, already rendered) must not confirm the NEW unconfirmed "yes".
+    const t = base([say(100, 'yes', 'user'), say(undefined, 'yes', 'user'), say(undefined, 'yes', 'user')], 100)
+    const one = applyTail(t, ID, page([say(100, 'yes', 'user'), say(300, 'yes', 'user')], 100), { carryUnconfirmed: true })
+    expect(texts(one)).toEqual(['yes', 'yes', 'yes']) // key 100, key 300, one still unconfirmed
+    expect(one.messages.map((m) => m.key)).toEqual([100, 300, undefined])
+  })
+
+  it('also carries over a whole-file read (olderCursor null) of the same transcript', () => {
+    const t = base([say(0, 'q'), say(undefined, 'go', 'user')])
+    const out = applyTail(t, ID, page([say(0, 'q')], null), { carryUnconfirmed: true })
+    expect(texts(out)).toEqual(['q', 'go'])
+  })
+
+  it('never carries into ANOTHER transcript', () => {
+    const t = base([say(undefined, 'go', 'user')])
+    const out = applyTail(t, 'other', page([say(0, 'x')], null), { carryUnconfirmed: true })
+    expect(texts(out)).toEqual(['x'])
+  })
+
+  it('a NON-live reload (turn end, ↻) retires any unconfirmed carry', () => {
+    const t = base([say(0, 'q'), say(undefined, 'never matches', 'user')], 0)
+    const out = applyTail(t, ID, page([say(0, 'q'), say(100, 'transformed prompt', 'user')], 0))
+    expect(texts(out)).toEqual(['q', 'transformed prompt'])
+  })
+})
+
 describe('applyOlder — the page-boundary carry', () => {
   it('prepends and attaches results the newer page carried', () => {
     let t = applyTail(emptyThread('A'), 'A', page([say(200, 'done')], 180, [{ id: 't9', result: 'build ok' }]))

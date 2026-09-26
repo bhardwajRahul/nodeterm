@@ -1641,6 +1641,12 @@ the wire never see any of it):
   are untouched. The real MiniMap regression tests cover ghost/live transitions, empty bounds,
   removals, grouped geometry and camera interaction. When upgrading React Flow, keep those
   tests: the projection deliberately mirrors the state fields consumed by MiniMap.
+  **A pan/zoom frame takes a transform-only fast path**: when `transform` changed and the node
+  collections did not, only the camera fields are copied and a full re-projection follows
+  `MINIMAP_FULL_SYNC_DEBOUNCE_MS` after the move settles (rebuilding them per frame re-rendered
+  every rectangle; measured 402 forced layouts per 20 s pan vs 1 with the map hidden). Identity
+  checks alone cannot replace the full path: xyflow's `updateNodeInternals` mutates `nodeLookup`
+  IN PLACE and then calls `set({})`, so any update that leaves `transform` alone syncs fully.
 - **Memory bounds** (same posture as park/WebGL: a lever must not end live work): a ghost is
   hidden, so the existing Browser Memory Saver discards its guest after `BROWSER_DISCARD_MS`
   unless loading/audible/agent-driven — `onGuestDiscarded` then drops the entry (a husk would hold

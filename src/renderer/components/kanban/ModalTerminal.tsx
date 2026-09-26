@@ -113,7 +113,7 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch, covere
   const termRef = useRef<Terminal | null>(null)
   const coveredRef = useRef(covered)
   coveredRef.current = covered
-  useMdModeFocus(covered, () => termRef.current, () => hostRef.current?.closest('.kanban-modal'))
+  useMdModeFocus(covered, () => termRef.current, () => hostRef.current?.closest('.kanban-modal'), nodeId)
   const searchAddonRef = useRef<SearchAddon | null>(null)
   // The live pty session + its fit addon, reachable from OUTSIDE the lifecycle effect's closure —
   // the appearance effect below has to re-fit and re-REPORT this viewer's grid, and under co-attach

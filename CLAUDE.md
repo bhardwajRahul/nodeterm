@@ -2572,6 +2572,20 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   terminal equivalent. Surfaces: Desktop + Server Edition identical (dictation and uploads already
   bridge — `files.saveUpload`, `speech.*`); SSH nodes upload to the host; kanban card modal shares
   ChatPanel and wires both props; relay tabs keep the panel's existing refusal; mobile N/A.
+  Fix-round rules (same day): the composer is its OWN component (`nodes/ChatComposer.tsx`) so the
+  thread and the composer restyle independently. A label click is an explicit "go to the
+  terminal", so the flip FOCUSES the xterm whatever its entry state was
+  (`requestTerminalFocusOnExit(nodeId)` before the state change, consumed once by the node's
+  `useMdModeFocus` — TerminalNode and ModalTerminal both key it by node id). `/model` and `/effort`
+  open LOCAL pickers that fire NO hook, so the gate still reads `done` while one is on screen: the
+  composer holds a picker command in flight (ref + disabled/`aria-disabled` labels, and Enter is
+  swallowed) from click until the flip or failure — a second click would otherwise paste
+  `/model` + Enter INTO the picker, confirming its highlighted row. **Inherent limitation:**
+  returning to ⌘M while a picker is still open reads `done` too, so a chat send or a label click
+  there would type into it — the pane is not observable from here. Shortcut dictation (keyed chord
+  and hold-to-talk) targets the composer holding the caret before the selected terminal (the pane
+  under the view is hidden) via `composerFromElement`; the dispatcher offers keyed dictation in
+  that one text field (`isChatComposerTarget`).
 - **Subagent visualization** (agents in `SUBAGENT_CAPABLE`) — `subagent-start`/`subagent-end`
   normalized events (from Claude's `PreToolUse`/`PostToolUse` on tool `Agent`/`Task`, correlated
   by `tool_use_id`) drive a transient `state/agentNodes.ts` store. Claude launches subagents

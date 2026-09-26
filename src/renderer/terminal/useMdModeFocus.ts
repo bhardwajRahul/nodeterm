@@ -23,10 +23,31 @@ export interface FocusableTerm {
  * `getTerm` is read at transition time, not captured: the node's xterm can be released, parked or
  * respawned while the view is open, and a stale instance must never be focused.
  */
+/**
+ * Node ids whose NEXT ⌘M exit must focus the terminal whatever the entry state was. Set by an
+ * action that is itself an explicit "go to the terminal": the ⌘M composer's model / effort label,
+ * which types `/model` / `/effort` into the pane and flips the view so the user can drive the
+ * picker it opened — with the keyboard, which is useless if the xterm does not have it. Entry was
+ * very often NOT from a focused terminal (context menu, ⌘K, the kanban card), which is exactly
+ * when the restore rule above would leave the picker unreachable.
+ *
+ * Module-level and keyed by node id because the request is made by the panel, which unmounts in
+ * the same flip, and consumed by the terminal's hook, which lives on. Consumed once: the hook that
+ * takes it deletes it, so a later unrelated exit is back on the ordinary rule.
+ */
+const focusOnExit = new Set<string>()
+
+/** Ask the next ⌘M exit of `nodeId` to focus its terminal. Call BEFORE the state change. */
+export function requestTerminalFocusOnExit(nodeId: string): void {
+  focusOnExit.add(nodeId)
+}
+
 export function useMdModeFocus(
   mdMode: boolean,
   getTerm: () => FocusableTerm | null | undefined,
-  getRoot: () => Element | null | undefined
+  getRoot: () => Element | null | undefined,
+  /** Whose `requestTerminalFocusOnExit` this hook answers. Absent = never forced. */
+  nodeId?: string
 ): void {
   const restoreRef = useRef(false)
   const prevRef = useRef(mdMode)
@@ -34,6 +55,8 @@ export function useMdModeFocus(
   getTermRef.current = getTerm
   const getRootRef = useRef(getRoot)
   getRootRef.current = getRoot
+  const nodeIdRef = useRef(nodeId)
+  nodeIdRef.current = nodeId
 
   useEffect(() => {
     if (prevRef.current === mdMode) return
@@ -43,6 +66,11 @@ export function useMdModeFocus(
       const ta = term?.textarea
       restoreRef.current = !!ta && document.activeElement === ta
       term?.blur()
+    } else if (nodeIdRef.current !== undefined && focusOnExit.delete(nodeIdRef.current)) {
+      // An explicit "go to the terminal" (see `requestTerminalFocusOnExit`): the user just clicked
+      // inside this node to get here, so nothing they chose elsewhere is being overridden.
+      restoreRef.current = false
+      term?.focus()
     } else if (restoreRef.current) {
       restoreRef.current = false
       if (mayRestoreFocus(document.activeElement, getRootRef.current(), document.body)) term?.focus()

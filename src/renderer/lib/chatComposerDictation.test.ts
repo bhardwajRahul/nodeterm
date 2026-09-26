@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import {
+  composerFromElement,
   deliverToComposer,
   dictationTargetFromRequest,
   requestComposerDictation,
@@ -61,5 +64,38 @@ describe('composer dictation delivery', () => {
     unsubs.push(() => window.removeEventListener('nodeterm:dictate', h))
     requestComposerDictation('n1', 'c1')
     expect(seen).toHaveBeenCalledWith({ nodeId: 'n1', composerId: 'c1' })
+  })
+})
+
+describe('composerFromElement (shortcut dictation with the caret in a composer)', () => {
+  it('finds the composer box around the focused textarea', () => {
+    const box = document.createElement('div')
+    box.setAttribute('data-chat-composer-id', 'c9')
+    box.setAttribute('data-chat-node-id', 'n9')
+    const ta = document.createElement('textarea')
+    box.append(ta)
+    document.body.append(box)
+    expect(composerFromElement(ta)).toEqual({ nodeId: 'n9', composerId: 'c9' })
+    box.remove()
+  })
+
+  it('is null anywhere else, and for no element at all', () => {
+    const ta = document.createElement('textarea')
+    document.body.append(ta)
+    expect(composerFromElement(ta)).toBeNull()
+    expect(composerFromElement(null)).toBeNull()
+    ta.remove()
+  })
+
+  it('both shortcut paths in Canvas ask the focused composer before the selected terminal', () => {
+    // Source pin: Canvas cannot be mounted here. Without the composer check the keyed chord and
+    // hold-to-talk typed the take into the HIDDEN pane under the ⌘M view.
+    const src = readFileSync(resolve(__dirname, '../canvas/Canvas.tsx'), 'utf8').replace(/\r\n/g, '\n')
+    const toggle = src.slice(src.indexOf('const toggleDictation = useCallback'))
+    expect(toggle.indexOf('focusedComposerDictationTarget()')).toBeGreaterThan(-1)
+    expect(toggle.indexOf('focusedComposerDictationTarget()')).toBeLessThan(toggle.indexOf('kanbanModalNodeRef.current'))
+    const hold = src.slice(src.indexOf('armed = true\n        heldSince = Date.now()'))
+    expect(hold.indexOf('focusedComposerDictationTarget()')).toBeGreaterThan(-1)
+    expect(hold.indexOf('focusedComposerDictationTarget()')).toBeLessThan(hold.indexOf('setDictationNonce'))
   })
 })

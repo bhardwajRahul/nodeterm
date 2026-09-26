@@ -36,6 +36,7 @@ import { useSession } from '../../session/session'
 // imports from `components/kanban/*`, and none of those re-import CardModal.
 import { sshConnectionScope, wakeHibernatedNode } from '../../nodes/TerminalNode'
 import { droppedPaths } from '../../terminal/file-drop'
+import { requestTerminalFocusOnExit } from '../../terminal/useMdModeFocus'
 import { useProjects } from '../../state/projects'
 import type { ProjectKanban } from '@shared/types'
 import type { KanbanSession } from './KanbanView'
@@ -559,7 +560,11 @@ export function CardModal({ session, columnTitle, board, onChangeBoard, onClose,
                                   : ''
                               })
                             }
-                            onShowTerminal={() => setMdFor(null)}
+                            onShowTerminal={() => {
+                              // The picker just opened in the live viewer needs the keyboard.
+                              requestTerminalFocusOnExit(session.id)
+                              setMdFor(null)
+                            }}
                           />
                         </Suspense>
                       ) : (

@@ -26,6 +26,15 @@ export interface ContextElement {
   classList?: { contains(name: string): boolean }
 }
 
+/** The ⌘M chat composer's textarea (nodes/ChatComposer.tsx). A TYPING target like any other, with
+ *  one exception the dispatcher makes: keyed dictation is allowed there, because the composer is
+ *  the one text field dictation can fill (lib/chatComposerDictation.ts). */
+export const CHAT_COMPOSER_INPUT_CLASS = 'term-chat__input'
+
+export function isChatComposerTarget(el: ContextElement | null): boolean {
+  return el?.classList?.contains(CHAT_COMPOSER_INPUT_CLASS) === true
+}
+
 export function isTerminalTarget(el: ContextElement | null): boolean {
   return el?.classList?.contains(XTERM_INPUT_CLASS) === true
 }

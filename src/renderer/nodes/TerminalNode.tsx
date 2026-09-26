@@ -179,7 +179,12 @@ import { coldSelfHealVerdict } from '../terminal/cold-self-heal'
 import { WakeInputBuffer } from '../terminal/wake-input-buffer'
 import { FindBar } from '../components/FindBar'
 import { TerminalMarkdownView } from './TerminalMarkdownView'
-import { focusXtermUnlessCovered, terminalOwnsFileInput, useMdModeFocus } from '../terminal/useMdModeFocus'
+import {
+  focusXtermUnlessCovered,
+  requestTerminalFocusOnExit,
+  terminalOwnsFileInput,
+  useMdModeFocus
+} from '../terminal/useMdModeFocus'
 import { canvasOwnsMarkdownChord } from '../lib/markdownChord'
 import { IconChat, IconChevronDown, IconChevronRight, IconClose, IconEye, IconEyeOff, IconGrid, IconMic, IconMoveTo, IconPlay, IconReload, IconSearch, IconSparkle } from '../components/icons'
 import { NodeLabels } from '../components/kanban/NodeLabels'
@@ -5339,7 +5344,7 @@ export function TerminalNode({
 
   // The ⌘M face (output view or ChatPanel) covers the xterm: blur it on entry so keystrokes stop
   // reaching a pane nobody can see, and hand focus back on exit only if it had it on entry.
-  useMdModeFocus(mdMode, () => termRef.current, () => rootRef.current)
+  useMdModeFocus(mdMode, () => termRef.current, () => rootRef.current, id)
   // Full-scrollback capture for the output view (TerminalMarkdownView owns the lifecycle: capture on
   // mount, ↻, stale-answer guard, line cap, scroll-to-latest). Session-bound, so a relay tab
   // captures the PEER's pane.
@@ -6079,7 +6084,11 @@ export function TerminalNode({
                     projectId: data.sshRemoteTmux ? dropProjectId() : ''
                   })
                 }
-                onShowTerminal={() => updateNodeData(id, () => ({ mdMode: false }))}
+                onShowTerminal={() => {
+                  // An explicit "go to the terminal": the picker just opened there needs the keyboard.
+                  requestTerminalFocusOnExit(id)
+                  updateNodeData(id, () => ({ mdMode: false }))
+                }}
               />
             </Suspense>
           ) : (

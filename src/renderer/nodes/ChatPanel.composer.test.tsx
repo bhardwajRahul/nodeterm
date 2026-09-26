@@ -17,7 +17,7 @@ import { COMPOSER_EFFORT_MIN_WIDTH, COMPOSER_MODEL_MIN_WIDTH } from '../lib/chat
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 const { sendText, session } = vi.hoisted(() => {
-  const sendText = vi.fn(async (_id: string, _text: string): Promise<boolean | 'pasted-not-submitted'> => true)
+  const sendText = vi.fn((_id: string, _text: string): Promise<boolean | 'pasted-not-submitted'> => Promise.resolve(true))
   const session = {
     api: {
       chat: { readTranscript: async () => ({ messages: [], found: true }) },
@@ -183,6 +183,36 @@ describe('composer attach ("+", paste, drop)', () => {
     expect(textarea().value).toBe('/tmp/notes.md ')
   })
 
+  it('the drop highlight never sticks: a drag cancelled without a dragleave (Esc, app switch) clears it', async () => {
+    setAgentState('done')
+    await mount()
+    const box = host.querySelector('.term-chat__composer')!
+    const over = async () => {
+      const ev = new Event('dragover', { bubbles: true, cancelable: true })
+      Object.defineProperty(ev, 'dataTransfer', { value: { types: ['Files'], dropEffect: 'none' } })
+      await act(async () => {
+        box.dispatchEvent(ev)
+      })
+    }
+    await over()
+    expect(box.classList.contains('term-chat__composer--drop')).toBe(true)
+    await act(async () => {
+      window.dispatchEvent(new Event('dragend'))
+    })
+    expect(box.classList.contains('term-chat__composer--drop')).toBe(false)
+    await over()
+    expect(box.classList.contains('term-chat__composer--drop')).toBe(true)
+    await act(async () => {
+      window.dispatchEvent(new Event('blur'))
+    })
+    expect(box.classList.contains('term-chat__composer--drop')).toBe(false)
+    await over()
+    await act(async () => {
+      window.dispatchEvent(new Event('drop'))
+    })
+    expect(box.classList.contains('term-chat__composer--drop')).toBe(false)
+  })
+
   it('says so when no path could be resolved (an upload that failed)', async () => {
     setAgentState('done')
     pathsForFiles.mockResolvedValue([])
@@ -321,13 +351,58 @@ describe('model / effort labels', () => {
     expect(textarea().placeholder).toMatch(/Can't write to this session/)
   })
 
+  it('one picker command at a time: a second click or an Enter while /model is in flight types nothing', async () => {
+    // /model opens a local picker that fires NO hook, so the gate still reads `done`; without the
+    // in-flight guard the second click would paste "/model" + Enter INTO that picker.
+    setUsage('claude-opus-5', 'high')
+    setAgentState('done')
+    let release: (v: boolean) => void = () => {}
+    sendText.mockImplementation(() => new Promise<boolean>((r) => (release = r)))
+    await mount()
+    await act(async () => type(textarea(), 'hello'))
+    // A double click lands before React re-renders the disabled state: only the ref can stop it.
+    await act(async () => {
+      modelBtn()!.click()
+      modelBtn()!.click()
+      effortBtn()!.click()
+    })
+    expect(modelBtn()!.disabled).toBe(true)
+    expect(modelBtn()!.getAttribute('aria-disabled')).toBe('true')
+    expect(effortBtn()!.disabled).toBe(true)
+    // The textarea stays live, but its Enter must not reach the pane while the picker opens.
+    await act(async () => {
+      textarea().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    })
+    expect(sendText).toHaveBeenCalledTimes(1)
+    expect(sendText).toHaveBeenCalledWith(NODE, '/model')
+    await act(async () => release(true))
+    await flush()
+    expect(onShowTerminal).toHaveBeenCalledTimes(1)
+  })
+
+  it('the in-flight guard lifts after a failure, so the label works again', async () => {
+    setUsage('claude-opus-5', 'high')
+    setAgentState('done')
+    sendText.mockResolvedValueOnce('pasted-not-submitted').mockResolvedValueOnce(true)
+    await mount()
+    await act(async () => modelBtn()!.click())
+    await flush()
+    expect(modelBtn()!.disabled).toBe(false)
+    await act(async () => modelBtn()!.click())
+    await flush()
+    expect(sendText).toHaveBeenCalledTimes(2)
+    expect(onShowTerminal).toHaveBeenCalledTimes(1)
+  })
+
   it('drops the effort label first, then the model label, as the composer narrows', async () => {
-    let fire: (width: number) => void = () => {}
+    // Every observer (the thread's and the composer's) hears the resize, like the real thing.
+    const cbs: Array<(entries: Array<{ contentRect: { width: number } }>) => void> = []
+    const fire = (width: number) => cbs.forEach((cb) => cb([{ contentRect: { width } }]))
     vi.stubGlobal(
       'ResizeObserver',
       class {
         constructor(cb: (entries: Array<{ contentRect: { width: number } }>) => void) {
-          fire = (width) => cb([{ contentRect: { width } }])
+          cbs.push(cb)
         }
         observe(): void {}
         disconnect(): void {}

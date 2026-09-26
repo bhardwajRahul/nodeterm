@@ -1,23 +1,11 @@
 import { TEXT_NOT_SUBMITTED } from '@shared/text-delivery'
-import {
-  memo,
-  useCallback,
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ClipboardEvent as ReactClipboardEvent,
-  type DragEvent as ReactDragEvent,
-  type KeyboardEvent
-} from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { renderMarkdown } from '../lib/markdown'
 import { useAgentStatus } from '../state/agentStatus'
 import { useSession } from '../session/session'
 import { chipFor } from '../lib/keybindingOverrides'
 import { chatComposerPlaceholder, chatSendRefusal } from '../lib/chatSendGate'
-import { chatAgentLabel, chatKeyAction, isNearBottom, shouldFollowOnLoad, toolCardTitle } from '../lib/chatPanel'
+import { chatAgentLabel, isNearBottom, shouldFollowOnLoad, toolCardTitle } from '../lib/chatPanel'
 import { useSettings } from '../state/settings'
 import {
   CHAT_OLDER_PAGE_BYTES,
@@ -36,11 +24,7 @@ import { ChatLoadingStatus } from './ChatPanelFallback'
 import { activeAnswerCard } from '../lib/chatAnswer'
 import { PlanAnswerControls, QuestionAnswerControls } from './ChatAnswerControls'
 import type { PermissionAnswer } from '@shared/agents/permission-answer'
-import { IconMic, IconPlus } from '../components/icons'
-import { useContextUsage } from '../state/contextWindow'
-import { appendToComposer, composerLabels, composerPickerCommand, type ComposerPicker } from '../lib/chatComposer'
-import { requestComposerDictation, subscribeComposerDictation } from '../lib/chatComposerDictation'
-import { clipboardImages, pasteHasText, pastedFiles } from '../terminal/file-drop'
+import { ChatComposer } from './ChatComposer'
 
 // Memoized bubble: marked+DOMPurify re-ran for EVERY message on each ChatPanel render (each
 // turn-finish reload, each keystroke re-render). Text is stable per message, so cache per text.
@@ -534,133 +518,7 @@ export function ChatPanel({
     setInput('')
   }, [api, input, nodeId, agentId])
 
-  // ── Composer toolbar (lib/chatComposer.ts) ────────────────────────────────────────────────
-  const inputRef = useRef<HTMLTextAreaElement>(null)
-  const composerRef = useRef<HTMLDivElement>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  // Per-MOUNT id, not the node id: the canvas node and the kanban card modal can both have this
-  // session's composer mounted, and a dictated take must land in the one whose mic was clicked.
-  const composerId = useId()
-  // The model / effort the header ContextMeter shows, from the SAME reader (no second transcript
-  // read). Never node-scoped: that is for remote Codex, which never mounts this panel.
-  const usage = useContextUsage({ sessionId, nodeId, scoped: false })
-  const [composerWidth, setComposerWidth] = useState<number | null>(null)
-  const [attachNote, setAttachNote] = useState<{ text: string; failed?: boolean } | null>(null)
-  const [dropping, setDropping] = useState(false)
-  const labels = composerLabels({ agentId, model: usage?.model, effort: usage?.effort, width: composerWidth })
-  const composerDisabled = readonly || refusal !== null
-
-  // The labels drop by the composer's OWN width (a narrow node, a split card modal), not the
-  // window's. Guarded like the thread's observer: jsdom and old engines have none, and then every
-  // label shows (`composerToolbarLayout(null)`).
-  useEffect(() => {
-    const el = composerRef.current
-    if (!el || typeof ResizeObserver === 'undefined') return
-    const ro = new ResizeObserver((entries?: ResizeObserverEntry[]) => {
-      // No box (collapsed node, display:none) reports 0: keep the last real width rather than
-      // collapsing the toolbar to its narrowest form while nobody can see it.
-      const w = entries?.[entries.length - 1]?.contentRect?.width ?? el.clientWidth
-      if (typeof w === 'number' && w > 0) setComposerWidth(Math.round(w))
-    })
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [readOnly])
-
-  const insertIntoComposer = useCallback((text: string) => {
-    setInput((cur) => appendToComposer(cur, text))
-    inputRef.current?.focus()
-  }, [])
-
-  // A dictated take for THIS composer lands in the draft, never in the pane.
-  useEffect(() => subscribeComposerDictation(composerId, insertIntoComposer), [composerId, insertIntoComposer])
-
-  const attachFiles = useCallback(
-    async (files: File[]) => {
-      if (!files.length || !pathsForFiles) return
-      setAttachNote({ text: `Attaching ${files.length === 1 ? files[0].name || 'file' : `${files.length} files`}…` })
-      let paths: string[] = []
-      try {
-        paths = await pathsForFiles(files)
-      } catch {
-        paths = []
-      }
-      if (!paths.length) {
-        setAttachNote({ text: 'Could not attach', failed: true })
-        return
-      }
-      setAttachNote(null)
-      // Same shape a drop into the terminal pastes: escaped paths, space-separated, trailing space.
-      insertIntoComposer(paths.join(' ') + ' ')
-    },
-    [pathsForFiles, insertIntoComposer]
-  )
-  useEffect(() => {
-    if (!attachNote?.failed) return
-    const t = setTimeout(() => setAttachNote(null), 2500)
-    return () => clearTimeout(t)
-  }, [attachNote])
-
-  // Files arriving by drop or paste become paths in the DRAFT (the terminal's own drop handlers
-  // stand aside while the ⌘M view covers it — `terminalOwnsFileInput`). Stopped here so the
-  // canvas's window-level drop (image nodes) never sees a drop aimed at the composer.
-  const onComposerDragOver = (e: ReactDragEvent) => {
-    if (!pathsForFiles || composerDisabled || !Array.from(e.dataTransfer.types).includes('Files')) return
-    e.preventDefault()
-    e.stopPropagation()
-    e.dataTransfer.dropEffect = 'copy'
-    if (!dropping) setDropping(true)
-  }
-  const onComposerDragLeave = (e: ReactDragEvent) => {
-    const rt = e.relatedTarget as Node | null
-    if (!rt || !(e.currentTarget as HTMLElement).contains(rt)) setDropping(false)
-  }
-  const onComposerDrop = (e: ReactDragEvent) => {
-    setDropping(false)
-    if (!pathsForFiles || composerDisabled) return
-    const files = Array.from(e.dataTransfer.files)
-    if (!files.length) return
-    e.preventDefault()
-    e.stopPropagation()
-    void attachFiles(files)
-  }
-  const onComposerPaste = (e: ReactClipboardEvent<HTMLTextAreaElement>) => {
-    if (!pathsForFiles) return
-    const files = pastedFiles(e.clipboardData)
-    if (files.length) {
-      e.preventDefault()
-      e.stopPropagation()
-      void attachFiles(files)
-      return
-    }
-    // Ordinary text is the textarea's; only an image-only clipboard Chromium filtered to nothing
-    // on its way to a text target asks the async Clipboard API (see `clipboardImages`).
-    if (pasteHasText(e.clipboardData)) return
-    void clipboardImages().then((images) => {
-      if (images.length) void attachFiles(images)
-    })
-  }
-
-  // The model / effort label: type the agent's own picker command into the pane — through the
-  // SAME send gate as a message, re-read at click time (a picker command typed into a dialog would
-  // answer it; into a shell it would run) — then flip to the terminal so the picker is in view.
-  const openPicker = useCallback(
-    async (picker: ComposerPicker) => {
-      const command = composerPickerCommand(agentId, picker)
-      if (!command || !onShowTerminal) return
-      if (chatSendRefusal(agentId, useAgentStatus.getState().byId[nodeId] ?? {}) !== null) return
-      const ok = await api.pty.sendText(nodeId, command)
-      if (ok === 'pasted-not-submitted') {
-        window.dispatchEvent(new CustomEvent('nodeterm:toast', { detail: { kind: 'error', message: TEXT_NOT_SUBMITTED } }))
-        return
-      }
-      if (ok !== true) {
-        setReadonly(true)
-        return
-      }
-      onShowTerminal()
-    },
-    [api, agentId, nodeId, onShowTerminal]
-  )
+  const onWriteRefused = useCallback(() => setReadonly(true), [])
 
   // Answer the held request through core, which validates the answer against the pending request
   // file and builds what the hook prints. The ticket is re-checked against the store at SEND time:
@@ -674,18 +532,6 @@ export function ChatPanel({
     },
     [api, nodeId]
   )
-
-  const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    // Shift+Enter falls through to the textarea's own newline; an IME commit is not a send.
-    const action = chatKeyAction({
-      key: e.key,
-      shiftKey: e.shiftKey,
-      isComposing: e.nativeEvent.isComposing || e.keyCode === 229
-    })
-    if (action !== 'send') return
-    e.preventDefault()
-    void send()
-  }
 
   // Whatever the markdown/chat toggle is bound to; '' when unbound, in which case the bar names
   // the action instead of promising a chord that never fires.
@@ -823,107 +669,26 @@ export function ChatPanel({
         )}
       </div>
       {!readOnly && (
-      <div className="term-chat__compose">
-        <div
-          ref={composerRef}
-          className={`term-chat__composer${dropping ? ' term-chat__composer--drop' : ''}${
-            composerDisabled ? ' term-chat__composer--disabled' : ''
-          }`}
-          onDragOver={onComposerDragOver}
-          onDragLeave={onComposerDragLeave}
-          onDrop={onComposerDrop}
-        >
-          <textarea
-            ref={inputRef}
-            className="term-chat__input"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={onKeyDown}
-            onPaste={onComposerPaste}
-            placeholder={chatComposerPlaceholder({
-              readonly,
-              refusal,
-              agentLabel,
-              chip: mdChip,
-              answerOnCard: answerCard !== null
-            })}
-            disabled={composerDisabled}
-            rows={2}
-          />
-          <div className="term-chat__toolbar">
-            {pathsForFiles && (
-              <>
-                <button
-                  type="button"
-                  className="term-chat__tool-btn"
-                  title="Attach files — their paths go into the message"
-                  aria-label="Attach files"
-                  disabled={composerDisabled}
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  <IconPlus />
-                </button>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  multiple
-                  hidden
-                  tabIndex={-1}
-                  aria-hidden="true"
-                  onChange={(e) => {
-                    const files = Array.from(e.target.files ?? [])
-                    // Reset so picking the same file again still fires `change`.
-                    e.target.value = ''
-                    void attachFiles(files)
-                  }}
-                />
-              </>
-            )}
-            {attachNote && (
-              <span
-                className={`term-chat__attach-note${attachNote.failed ? ' term-chat__attach-note--failed' : ''}`}
-                role="status"
-              >
-                {!attachNote.failed && <Spinner />}
-                {attachNote.text}
-              </span>
-            )}
-            <span className="term-chat__toolbar-spacer" />
-            {onShowTerminal && labels.model && (
-              <button
-                type="button"
-                className="term-chat__model"
-                title={`Change model — opens ${agentLabel}'s /model picker in the terminal`}
-                disabled={composerDisabled}
-                onClick={() => void openPicker('model')}
-              >
-                {labels.model}
-              </button>
-            )}
-            {onShowTerminal && labels.effort && (
-              <button
-                type="button"
-                className="term-chat__effort"
-                title={`Change effort — opens ${agentLabel}'s /effort picker in the terminal`}
-                disabled={composerDisabled}
-                onClick={() => void openPicker('effort')}
-              >
-                {labels.effort}
-              </button>
-            )}
-            <button
-              type="button"
-              className="term-chat__tool-btn"
-              title="Dictate into the message"
-              aria-label="Dictate into the message"
-              disabled={composerDisabled}
-              onClick={() => requestComposerDictation(nodeId, composerId)}
-            >
-              <IconMic />
-            </button>
-          </div>
-        </div>
-      </div>
+        <ChatComposer
+          nodeId={nodeId}
+          sessionId={sessionId}
+          agentId={agentId}
+          agentLabel={agentLabel}
+          value={input}
+          onChange={setInput}
+          onSend={() => void send()}
+          placeholder={chatComposerPlaceholder({
+            readonly,
+            refusal,
+            agentLabel,
+            chip: mdChip,
+            answerOnCard: answerCard !== null
+          })}
+          disabled={readonly || refusal !== null}
+          onWriteRefused={onWriteRefused}
+          pathsForFiles={pathsForFiles}
+          onShowTerminal={onShowTerminal}
+        />
       )}
     </div>
   )

@@ -57,3 +57,19 @@ export function subscribeComposerDictation(composerId: string, onText: (text: st
   window.addEventListener('nodeterm:chat-dictation', handler)
   return () => window.removeEventListener('nodeterm:chat-dictation', handler)
 }
+
+/**
+ * The composer that holds keyboard focus, if any — for the SHORTCUT dictation paths (the keyed
+ * chord and hold-to-talk), which otherwise target the selected canvas terminal. With the caret in
+ * a ⌘M composer that terminal is the HIDDEN pane under the view, so a take would be typed into a
+ * pane nobody can see; the composer the user is typing in is what they mean. Read from the
+ * composer box's data attributes (ChatComposer), never from React state: the shortcut handlers
+ * live in Canvas and know nothing of which panel is mounted.
+ */
+export function composerFromElement(el: Element | null | undefined): { nodeId: string; composerId: string } | null {
+  const box = el?.closest?.('[data-chat-composer-id]')
+  if (!box) return null
+  const composerId = box.getAttribute('data-chat-composer-id')
+  const nodeId = box.getAttribute('data-chat-node-id')
+  return composerId && nodeId ? { nodeId, composerId } : null
+}

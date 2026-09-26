@@ -157,7 +157,7 @@ import { WelcomeScreen } from '../components/WelcomeScreen'
 import { CloneRepoDialog } from '../components/CloneRepoDialog'
 import { markMobileLaunchSeen, shouldShowMobileLaunch } from '../lib/mobileLaunch'
 import type { DictationTarget } from '../components/DictationOverlay'
-import { dictationTargetFromRequest } from '../lib/chatComposerDictation'
+import { composerFromElement, dictationTargetFromRequest } from '../lib/chatComposerDictation'
 import { describeOs, REPO_URL } from '../lib/bugReport'
 import { shouldReleasePaneFocus } from '../lib/paneFocus'
 import {
@@ -2383,10 +2383,25 @@ export function Canvas() {
   // The node whose kanban card modal is open (null = none). The dictation shortcut targets THIS
   // when set, since no canvas node is selected while the board covers the canvas.
   const kanbanModalNodeRef = useRef<string | null>(null)
+  // The ⌘M chat composer holding the caret, as a dictation target (lib/chatComposerDictation.ts).
+  // Both shortcut paths ask it FIRST: with the caret in a composer, the selected terminal is the
+  // hidden pane under the view, and the take belongs in the draft being typed.
+  const focusedComposerDictationTarget = (): DictationTarget | null => {
+    const c = composerFromElement(document.activeElement)
+    if (!c) return null
+    const n = nodesRef.current.find((x) => x.id === c.nodeId)
+    return dictationTargetFromRequest(c, (n?.data.title as string) || 'Untitled')
+  }
   const toggleDictation = useCallback(() => {
     setDictationOpen((open) => {
       if (open) {
         setDictationStopSignal((n) => n + 1)
+        return true
+      }
+      const composer = focusedComposerDictationTarget()
+      if (composer) {
+        setDictationTarget(composer)
+        setDictationNonce((n) => n + 1)
         return true
       }
       // A kanban card modal open over the board wins (nothing on the canvas is selected then);
@@ -5054,8 +5069,11 @@ export function Canvas() {
         armed = true
         heldSince = Date.now()
         const sel = nodesRef.current.find((n) => n.selected && n.type === 'terminal')
+        const composer = focusedComposerDictationTarget()
         setDictationTarget(
-          sel
+          composer
+            ? composer
+            : sel
             ? {
                 kind: 'terminal',
                 nodeId: sel.id,

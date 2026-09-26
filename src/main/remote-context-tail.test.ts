@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, appendFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createRemoteContextTail } from './remote-context-tail'
+import { createRemoteContextTail, idleDelayMs } from './remote-context-tail'
 import { RemoteFile, type RemoteFileRef } from './remote-ssh/remote-file'
 
 const cap = 1024 * 1024
@@ -217,4 +217,97 @@ it('passes only live SSH result IDs to the correlated answer consumer', async ()
     await vi.advanceTimersByTimeAsync(1000)
     expect(h.onToolResult.mock.calls).toEqual([['session', 'other'], ['session', 'ask']])
   } finally { h.tail.untrack('session') }
+})
+
+describe('idle backoff', () => {
+  const idleRemote = () => vi.fn()
+    .mockResolvedValue({ data: Buffer.alloc(0), newOffset: 4096, initial: false })
+    .mockResolvedValueOnce({ data: Buffer.from(usage(100)), newOffset: 4096, initial: true })
+
+  it('idleDelayMs keeps 1 s polling for the first three empty reads, then backs off to 10 s', () => {
+    expect([1, 2, 3].map(idleDelayMs)).toEqual([0, 0, 0])
+    expect(idleDelayMs(4)).toBe(2000)
+    expect(idleDelayMs(5)).toBe(4000)
+    expect(idleDelayMs(6)).toBe(8000)
+    expect(idleDelayMs(7)).toBe(10_000)
+    expect(idleDelayMs(50)).toBe(10_000)
+  })
+
+  it('stops reading every second once the transcript has been idle', async () => {
+    const readContextWindow = idleRemote()
+    const { tail } = harness({ readContextWindow })
+    try {
+      tail.track('s1', ref)
+      await flush()
+      for (let i = 0; i < 30; i++) await vi.advanceTimersByTimeAsync(1000)
+      // Unbacked-off polling would read 31 times (the immediate read plus one per tick).
+      expect(readContextWindow.mock.calls.length).toBeLessThan(15)
+    } finally { tail.untrack('s1') }
+  })
+
+  it('a read that returns data resets the streak', async () => {
+    const readContextWindow = idleRemote()
+    const { tail } = harness({ readContextWindow })
+    try {
+      tail.track('s1', ref)
+      await flush()
+      for (let i = 0; i < 20; i++) await vi.advanceTimersByTimeAsync(1000)
+      // Backed off: the next read lands only once idleUntil passes. Make it carry data.
+      readContextWindow.mockResolvedValueOnce({ data: Buffer.from(usage(200)), newOffset: 8192, initial: false })
+      const backedOff = readContextWindow.mock.calls.length
+      while (readContextWindow.mock.calls.length === backedOff) await vi.advanceTimersByTimeAsync(1000)
+      expect(tail.offsetFor('s1')).toBe(8192)
+      const before = readContextWindow.mock.calls.length
+      await vi.advanceTimersByTimeAsync(3000)
+      // Streak reset: back to one read per tick for the next three empty reads.
+      expect(readContextWindow.mock.calls.length - before).toBe(3)
+    } finally { tail.untrack('s1') }
+  })
+
+  it('track() of the same ref resets the backoff (a hook arrived)', async () => {
+    const readContextWindow = idleRemote()
+    const { tail } = harness({ readContextWindow })
+    try {
+      tail.track('s1', ref)
+      await flush()
+      for (let i = 0; i < 20; i++) await vi.advanceTimersByTimeAsync(1000)
+      // Land just after a backed-off read so the next one is ~10 s away.
+      let before = readContextWindow.mock.calls.length
+      while (readContextWindow.mock.calls.length === before) await vi.advanceTimersByTimeAsync(1000)
+      before = readContextWindow.mock.calls.length
+      tail.track('s1', { ...ref, conn: { ...ref.conn } })
+      await vi.advanceTimersByTimeAsync(1100)
+      expect(readContextWindow.mock.calls.length - before).toBe(1)
+    } finally { tail.untrack('s1') }
+  })
+
+  it('a failed read keeps the failure backoff, not the idle one', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const readContextWindow = idleRemote()
+    const { tail } = harness({ readContextWindow })
+    try {
+      tail.track('s1', ref)
+      await flush()
+      readContextWindow.mockRejectedValueOnce(new Error('down'))
+      await vi.advanceTimersByTimeAsync(1000)
+      const before = readContextWindow.mock.calls.length
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(readContextWindow.mock.calls.length).toBe(before)
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(readContextWindow.mock.calls.length).toBe(before + 1)
+    } finally { tail.untrack('s1') }
+  })
+
+  it('offsetFor reports the last read offset', async () => {
+    const readContextWindow = idleRemote()
+    const { tail } = harness({ readContextWindow })
+    try {
+      expect(tail.offsetFor('s1')).toBeNull()
+      tail.track('s1', ref)
+      await flush()
+      expect(tail.offsetFor('s1')).toBe(4096)
+      expect(tail.offsetFor('unknown')).toBeNull()
+      expect(tail.offsetFor(undefined)).toBeNull()
+    } finally { tail.untrack('s1') }
+  })
 })

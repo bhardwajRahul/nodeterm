@@ -235,6 +235,7 @@ import {
 import { createRemoteContextTail } from './remote-context-tail'
 import { createRemoteSubagentTail } from './remote-subagent-tail'
 import { RemoteFile, type RemoteFileRef } from './remote-ssh/remote-file'
+import { createRemoteTitleReader } from './remote-title-reader'
 import {
   checkMasterArgs,
   childArgs,
@@ -2465,12 +2466,19 @@ app.whenReady().then(async () => {
   // project's agent runs on the remote host, so its transcript is NOT under the local
   // `~/.claude/projects` — without this, `/rename` never reached the node title on remote nodes
   // (and the poll re-scanned the local root every 4s for nothing). Returning null for an unknown
-  // sessionId keeps every local node on the local reader.
-  setRemoteTranscriptReader(async (sessionId) => {
-    const ref = remoteTranscriptBySession.get(sessionId)
-    if (!ref) return null
-    return { text: await remoteFile.readTail(ref, TITLE_TAIL_BYTES) }
-  })
+  // sessionId keeps every local node on the local reader. The ssh tail read is skipped while the
+  // remote context tail's offset for the SAME path has not moved (the file has not grown); a
+  // tail tracking a different path answers "unknown", which always reads.
+  setRemoteTranscriptReader(
+    createRemoteTitleReader({
+      refFor: (sessionId) => remoteTranscriptBySession.get(sessionId),
+      offsetFor: (sessionId) =>
+        remoteContextTail.pathFor(sessionId) === remoteTranscriptBySession.get(sessionId)?.path
+          ? remoteContextTail.offsetFor(sessionId)
+          : null,
+      readTail: (ref) => remoteFile.readTail(ref, TITLE_TAIL_BYTES)
+    })
+  )
   // toolUseIds whose remote subagent file resolution was cancelled (PostToolUse / node close
   // arrived before the file appeared) — checked by the async resolver to avoid a late track.
   // Bounded by `remoteSubagentResolving`: a cancel flag is only added (and only matters) while a

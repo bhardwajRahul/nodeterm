@@ -70,12 +70,29 @@ export async function readPendingRequestLocal(
 ): Promise<string | null> {
   if (!isValidPendingId(pendingId)) return null
   const file = path.join(pendingDir(homeDir), `${pendingId}.json`)
+  // ONE file descriptor for the check and the read (no stat-then-read on a path, which a swap in
+  // between could defeat). O_NOFOLLOW refuses a symlink planted at the name; where the platform has
+  // no such flag (Windows) it is 0 and the isFile() check on the opened handle still applies.
+  let fh: fs.promises.FileHandle | undefined
   try {
-    const st = await fs.promises.stat(file)
+    fh = await fs.promises.open(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0))
+    const st = await fh.stat()
     if (!st.isFile() || st.size > PENDING_REQUEST_MAX_BYTES) return null
-    return await fs.promises.readFile(file, 'utf8')
+    // Read at most one byte past the cap from the SAME handle: a file that grew after the fstat is
+    // still refused rather than slurped.
+    const buf = Buffer.alloc(PENDING_REQUEST_MAX_BYTES + 1)
+    let total = 0
+    while (total < buf.length) {
+      const { bytesRead } = await fh.read(buf, total, buf.length - total, total)
+      if (bytesRead === 0) break
+      total += bytesRead
+    }
+    if (total > PENDING_REQUEST_MAX_BYTES) return null
+    return buf.subarray(0, total).toString('utf8')
   } catch {
     return null
+  } finally {
+    await fh?.close().catch(() => {})
   }
 }
 

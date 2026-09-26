@@ -99,6 +99,21 @@ describe('readPendingRequestLocal + localHeldPermissionIo', () => {
     fs.writeFileSync(path.join(pendingDir(home), 'big.json'), 'x'.repeat(PENDING_REQUEST_MAX_BYTES + 1))
     expect(await readPendingRequestLocal('big', home)).toBeNull()
   })
+  it('reads a file exactly at the cap, and refuses a directory at the name', async () => {
+    fs.mkdirSync(pendingDir(home), { recursive: true })
+    const atCap = 'y'.repeat(PENDING_REQUEST_MAX_BYTES)
+    fs.writeFileSync(path.join(pendingDir(home), 'cap.json'), atCap)
+    expect(await readPendingRequestLocal('cap', home)).toBe(atCap)
+    fs.mkdirSync(path.join(pendingDir(home), 'dir.json'))
+    expect(await readPendingRequestLocal('dir', home)).toBeNull()
+  })
+  it.skipIf(process.platform === 'win32')('refuses a symlink planted at the name (O_NOFOLLOW; POSIX only)', async () => {
+    fs.mkdirSync(pendingDir(home), { recursive: true })
+    const target = path.join(home, 'secret.json')
+    fs.writeFileSync(target, JSON.stringify({ hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: {} }))
+    fs.symlinkSync(target, path.join(pendingDir(home), 'link.json'))
+    expect(await readPendingRequestLocal('link', home)).toBeNull()
+  })
   it('end to end: a plan answer is built from the file on disk and written beside it', async () => {
     fs.mkdirSync(pendingDir(home), { recursive: true })
     fs.writeFileSync(

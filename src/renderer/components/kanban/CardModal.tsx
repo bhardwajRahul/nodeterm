@@ -259,6 +259,10 @@ export function CardModal({ session, columnTitle, board, onChangeBoard, onClose,
       // Esc while focus is elsewhere (the board-log composer, the header, etc.).
       const ae = document.activeElement
       if (ae && ae.closest('.kanban-modal__term')) return
+      // The ⌘M chat view's text fields own Esc too: the plan "Revise…" box cancels its own edit on
+      // Esc, and closing the whole modal from inside it (or from the composer) threw the typed text
+      // away. This listener runs in the CAPTURE phase, before any field's own handler could stop it.
+      if (ae && ae.closest('.term-chat__answer, .term-chat__compose')) return
       e.preventDefault()
       e.stopPropagation()
       onClose()

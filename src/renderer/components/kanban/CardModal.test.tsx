@@ -417,6 +417,55 @@ describe('CardModal', () => {
     act(() => root.unmount())
   })
 
+  it('yields Escape to the ⌘M chat view\'s text fields (plan Revise box, composer) — typing is not lost', () => {
+    const session: KanbanSession = {
+      id: 'node-sticky-chat-esc',
+      title: 'Chat Esc',
+      color: '#ffd60a',
+      kind: 'sticky',
+      text: 'x',
+      spawn: {}
+    }
+    const root = createRoot(host)
+    const onClose = vi.fn()
+    act(() =>
+      root.render(
+        <CardModal
+          session={session}
+          columnTitle="To Do"
+          board={board}
+          onChangeBoard={vi.fn()}
+          onClose={onClose}
+          onOpenCanvas={vi.fn()}
+          onRename={vi.fn()}
+          onEditSticky={vi.fn()}
+          onSetIcon={vi.fn()}
+          onBrowserNav={vi.fn()}
+        />
+      )
+    )
+    const esc = () =>
+      act(() => {
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      })
+    for (const cls of ['term-chat__answer', 'term-chat__compose']) {
+      const wrap = document.createElement('div')
+      wrap.className = cls
+      const ta = document.createElement('textarea')
+      wrap.append(ta)
+      document.body.append(wrap)
+      ta.focus()
+      esc()
+      expect(onClose).not.toHaveBeenCalled()
+      ta.blur()
+      wrap.remove()
+    }
+    // Focus elsewhere: Esc closes the modal as before.
+    esc()
+    expect(onClose).toHaveBeenCalledTimes(1)
+    act(() => root.unmount())
+  })
+
   it('respects isTopDialog ownership: ignores Escape when another dialog is stacked on top', () => {
     const session: KanbanSession = {
       id: 'node-sticky-dialog-stack',

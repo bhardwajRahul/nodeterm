@@ -320,4 +320,38 @@ describe('ChatPanel progressive loading', () => {
     expect(pending).toHaveLength(4)
     expect(pending[3].page).toEqual({ before: 1000, maxBytes: CHAT_OLDER_PAGE_BYTES })
   })
+  // A tail window can hold no message at all and still have history behind it (its records were
+  // all metadata, or — before core grew such windows — one line bigger than the page). That is
+  // "still loading", never "No conversation yet.": the panel pages back by itself from there.
+  it('an EMPTY tail with history behind it shows the loading row, not the empty state', async () => {
+    await render()
+    await settle(0, { messages: [], olderCursor: 5000 })
+    expect(host.textContent).not.toContain('No conversation yet.')
+    expect(host.querySelector('[role="status"]')?.textContent).toContain('Loading conversation…')
+    expect(pending).toHaveLength(2) // it paged back on its own
+    expect(pending[1].page).toEqual({ before: 5000, maxBytes: CHAT_OLDER_PAGE_BYTES })
+    await settle(1, { messages: [say(0, 'older')], olderCursor: null })
+    expect(bubbles()).toEqual(['older'])
+    expect(host.textContent).not.toContain('Loading conversation…')
+  })
+
+  it('an empty tail whose older page FAILS offers the retry row, not an empty conversation', async () => {
+    await render()
+    await settle(0, { messages: [], olderCursor: 5000 })
+    await act(async () => pending[1].reject(new Error('host blip')))
+    expect(host.textContent).not.toContain('No conversation yet.')
+    expect(host.textContent).toContain("Couldn't load earlier messages.")
+    await act(async () => host.querySelector<HTMLButtonElement>('.term-chat__older .term-chat__retry')!.click())
+    expect(pending).toHaveLength(3)
+    expect(pending[2].page).toEqual({ before: 5000, maxBytes: CHAT_OLDER_PAGE_BYTES })
+  })
+
+  it('switching session to one whose read REJECTS clears the previous session\'s thread', async () => {
+    await render('s1')
+    await settle(0, { messages: [say(1000, 'OLD session')], olderCursor: null })
+    await render('s2')
+    await act(async () => pending[1].reject(new Error('boom')))
+    expect(bubbles()).toEqual([])
+    expect(host.textContent).toContain("Couldn't read the transcript.")
+  })
 })

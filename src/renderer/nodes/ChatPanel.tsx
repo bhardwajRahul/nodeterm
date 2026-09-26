@@ -202,6 +202,9 @@ export function ChatPanel({
           setLoadState('ok')
           return
         }
+        // …and, as there, a thread of ANOTHER transcript (the session changed under the panel) is
+        // cleared: the error message must not sit under the previous session's conversation.
+        if (t.identity !== identity) setThread(emptyThread(identity))
         setLoadState(isUnsupported(e) ? 'unsupported' : 'error')
       }
     )
@@ -381,6 +384,16 @@ export function ChatPanel({
   // the action instead of promising a chord that never fires.
   const mdChip = chipFor('node.toggleMarkdown')
 
+  // A tail that yielded no message but has history behind it (all-metadata records, or a window a
+  // single huge record filled) is STILL LOADING — the panel pages back by itself from here. Saying
+  // "No conversation yet." there, until the older page landed, told the user a session with a
+  // whole conversation had none. A failed older page gets the retry row instead (below).
+  const historyPending = thread.identity === identity && thread.olderCursor !== null
+  const initialLoading =
+    messages.length === 0 &&
+    (loadState === 'loading' || (loadState === 'ok' && historyPending && olderState !== 'error'))
+  const showEmpty = messages.length === 0 && loadState !== 'loading' && !(loadState === 'ok' && historyPending)
+
   return (
     <div className="term-chat nodrag nowheel">
       <div className="term-chat__bar">
@@ -398,7 +411,7 @@ export function ChatPanel({
         </span>
       </div>
       <div className="term-chat__msgs" ref={msgsRef} onScroll={onScroll}>
-        {messages.length === 0 && loadState === 'loading' && (
+        {initialLoading && (
           <div className="term-chat__loading" role="status">
             <span className="term-chat__spinner" aria-hidden="true" />
             <span>{EMPTY_TEXT.loading.title}</span>
@@ -410,7 +423,7 @@ export function ChatPanel({
             <span>Loading earlier messages…</span>
           </div>
         )}
-        {messages.length > 0 && olderState === 'error' && (
+        {olderState === 'error' && (
           <div className="term-chat__older term-chat__older--error">
             <span>Couldn't load earlier messages.</span>
             <button className="term-chat__retry" onClick={loadOlder}>
@@ -423,7 +436,7 @@ export function ChatPanel({
         {olderState === 'idle' && thread.olderCursor === null && messages.some((m) => m.key !== undefined) && (
           <div className="term-chat__older term-chat__older--start">Beginning of conversation</div>
         )}
-        {messages.length === 0 && loadState !== 'loading' && (
+        {showEmpty && (
           <div className="term-chat__empty">
             <div>{EMPTY_TEXT[loadState].title}</div>
             {EMPTY_TEXT[loadState].detail && (

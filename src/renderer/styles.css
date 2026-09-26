@@ -3202,11 +3202,21 @@ body,
   cursor: pointer;
   list-style: none;
 }
+/* The summary is a flex row, and a flex item's automatic minimum width is its min-content width.
+   Before these two sizings, a long argument (a `Bash` command line) could not shrink below its
+   unbroken nowrap text, so the row's overflow was taken out of the NAME instead — whose
+   min-content is one character — and "Bash" rendered one letter per line. The name is fixed at its
+   own width and never wraps; the argument takes the rest and is allowed (`min-width: 0`) to shrink
+   below its content, so its own ellipsis does the truncating. */
 .term-chat__tool-name {
+  flex: 0 0 auto;
+  white-space: nowrap;
   font-weight: 600;
   color: var(--accent);
 }
 .term-chat__tool-arg {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3219,6 +3229,52 @@ body,
   font-family: ui-monospace, monospace;
   font-size: 11px;
   opacity: 0.85;
+}
+/* Shared loading spinner (`components/Spinner.tsx`). CSS-only: a ring with one transparent
+   quarter, rotated. It inherits `currentColor` and scales with the surrounding font size, so the
+   same element sits beside 11px bar text and 12px placeholder text without per-site sizing.
+   `--nt-anim-state` is the app-wide pause every looping animation honours. */
+.nt-spinner {
+  display: inline-block;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: 1em;
+  height: 1em;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  opacity: 0.7;
+  vertical-align: -0.15em;
+  animation: nt-spinner-rotate 0.8s linear infinite;
+  animation-play-state: var(--nt-anim-state);
+}
+@keyframes nt-spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+/* Reduced motion: a STATIC indicator, not an absent one — the frozen ring (with its gap) plus the
+   text beside it still says "working"; hiding it would make a slow load read as a blank panel. */
+@media (prefers-reduced-motion: reduce) {
+  .nt-spinner {
+    animation: none;
+  }
+}
+
+/* ⌘M chat panel shell shown while the lazy ChatPanel chunk loads (`nodes/ChatPanelFallback.tsx`). */
+.term-chat__fallback-status {
+  margin: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: rgba(var(--tint-rgb), 0.45);
+}
+/* The ⌘M output view's initial "Capturing…" placeholder, spinner beside the text. */
+.term-md__capturing {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 .term-chat__compose {
   flex: 0 0 auto;

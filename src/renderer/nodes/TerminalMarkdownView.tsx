@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { IconReload } from '../components/icons'
 import { Tooltip } from '../components/Tooltip'
+import { Spinner } from '../components/Spinner'
 
 /**
  * The ⌘M "output" face of a terminal: its captured scrollback rendered as readable markdown.
@@ -106,7 +107,12 @@ export function TerminalMarkdownView({ nodeId, capture, hint }: TerminalMarkdown
         <span className="term-md__title">
           Markdown
           {capturing && view.kind !== 'loading' && (
-            <span className="term-md__status"> · Capturing…</span>
+            // A refresh keeps the old output on screen, so this bar line is the only sign one is
+            // running — hence the spinner. The status role sits on the text; the spinner is mute.
+            <span className="term-md__status" role="status" aria-live="polite">
+              {' · '}
+              <Spinner /> Capturing…
+            </span>
           )}
           {view.kind === 'ready' && view.dropped > 0 && (
             <span className="term-md__status">
@@ -135,13 +141,18 @@ export function TerminalMarkdownView({ nodeId, capture, hint }: TerminalMarkdown
         <div ref={contentRef} className="term-md__content" dangerouslySetInnerHTML={{ __html: view.html }} />
       ) : (
         <div className="term-md__content term-md__content--placeholder">
-          {view.kind === 'loading'
-            ? 'Capturing…'
-            : view.kind === 'empty'
-              ? 'Nothing captured from this terminal.'
-              : view.stage === 'render'
-                ? 'Could not render this terminal’s output.'
-                : 'Could not capture this terminal’s output.'}
+          {view.kind === 'loading' ? (
+            <span className="term-md__capturing" role="status" aria-live="polite">
+              <Spinner />
+              Capturing…
+            </span>
+          ) : view.kind === 'empty' ? (
+            'Nothing captured from this terminal.'
+          ) : view.stage === 'render' ? (
+            'Could not render this terminal’s output.'
+          ) : (
+            'Could not capture this terminal’s output.'
+          )}
         </div>
       )}
     </div>

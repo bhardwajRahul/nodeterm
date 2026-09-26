@@ -23,10 +23,13 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
 import { WebglAddon } from '@xterm/addon-webgl'
+import { ChatPanelFallback } from './ChatPanelFallback'
 // ChatPanel (the ⌘M transcript view) is code-split with the markdown renderer it uses: neither is
 // on the path to painting a terminal, and both were in the startup chunk purely by being imported
-// here. `lazy` + a null fallback — the panel replaces the terminal body on a keypress, and a
-// one-frame spinner in that slot reads as a glitch.
+// here. The fallback is the panel's own shell (`ChatPanelFallback`: bar + spinner + "Loading
+// conversation…"), NOT null: a null fallback was chosen on the theory that the chunk arrives in a
+// frame, but in use the ⌘M face sat blank long enough to be reported as broken (2026-09-26). The
+// shell has the panel's exact geometry, so a fast load still reads as the panel appearing.
 const ChatPanel = lazy(() => import('./ChatPanel').then((m) => ({ default: m.ChatPanel })))
 import { LocalTransport } from '../terminal/local-transport'
 import { clipboardImages, droppedPaths, pasteHasText, pastedFiles } from '../terminal/file-drop'
@@ -6019,7 +6022,7 @@ export function TerminalNode({
         )}
         {mdMode &&
           (useChat ? (
-            <Suspense fallback={null}>
+            <Suspense fallback={<ChatPanelFallback />}>
               <ChatPanel
                 nodeId={id}
                 sessionId={status?.sessionId}

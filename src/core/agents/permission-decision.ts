@@ -47,10 +47,11 @@ export const PENDING_REQUEST_MAX_BYTES = 512 * 1024
 
 /**
  * Seconds the hook holds an ExitPlanMode / AskUserQuestion request (other tools keep
- * PERM_WAIT_SECS_DEFAULT). People read a plan for minutes. Bounded by Claude's command-hook
- * timeout: our installers write NO `timeout` on the PermissionRequest entry, so Claude's default of
- * 600 s applies (hooks docs; pinned in install-helper.test.ts) — 540 leaves a 60 s margin so the
- * hook always exits on its own terms. On the main thread the dialog is painted CONCURRENTLY with
+ * PERM_WAIT_SECS_DEFAULT). People read a plan for minutes. Bounded by the command-hook timeout our
+ * installers write EXPLICITLY on the PermissionRequest handler — `timeout: 600`
+ * (`PERMISSION_REQUEST_HOOK_TIMEOUT_SECS`, declared in `CLAUDE_HOOK_EVENTS`, shared/agents/hook-events.ts;
+ * local, managed-account and SSH installs alike) — so the bound is ours, not a CLI default that
+ * could change. 540 leaves a 60 s margin (pinned by tests) so the hook always exits on its own terms. On the main thread the dialog is painted CONCURRENTLY with
  * the hook (research §1), so a long hold blocks nothing; a subagent's request is awaited before
  * its dialog, which is why the script keeps the default hold whenever the payload names an agent_id.
  */

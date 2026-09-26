@@ -11140,13 +11140,17 @@ button.group-node__setup:disabled {
 .term-node__labels {
   padding: 0 8px 4px;
 }
-/* Canvas node label row (unified with kanban labels): chips + an add button + the picker popover. */
+/* Canvas node label row (unified with kanban labels): chips + an add button + the picker popover,
+   plus an optional trailing slot (the ⌘M hint). The row itself NEVER wraps and has no gap; the
+   chips + "+ Label" wrap inside `.term-node__labelmain` instead, against the full row width — so
+   they break exactly where they did when they were the row's own items. See `__labeltrail` for why
+   the trailing slot cannot change that. */
 .term-node__labelrow {
   position: relative;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: 4px;
+  gap: 0;
   padding: 2px 8px 5px;
   /* Its OWN background, not one inherited from the node root. Visually identical to what it had
      before (the root is var(--panel) too) — but the shared glyph renderer makes that root
@@ -11173,33 +11177,53 @@ button.group-node__setup:disabled {
   background: rgba(var(--tint-rgb), 0.12);
   color: var(--text-strong);
 }
-/* Trailing slot of the label row (NodeLabels `trailing`): `margin-left: auto` takes the row's free
-   space, pinning the slot to the right end while the chips and "+ Label" keep their place. */
-.term-node__labeltrail {
-  margin-left: auto;
-  display: inline-flex;
+/* The chips group: its basis is its content and it never grows, so free space goes to the
+   trailing slot; when the content is wider than the row it shrinks to the row and wraps, exactly as
+   the row's own items did before the slot existed. It keeps the row's old 4px gap. */
+.term-node__labelmain {
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  gap: 4px;
+  flex: 0 1 auto;
   min-width: 0;
 }
-/* The ⌘M hint in that slot (`components/MdViewHintButton.tsx`): deliberately quieter than
-   "+ Label" — no border, no fill until hover, dimmer text — a discoverability cue, not a control
-   competing for attention. nowrap so it never breaks into two lines under a narrow node. */
+/* Trailing slot of the label row (NodeLabels `trailing`). A ZERO flex basis is the whole trick: it
+   contributes nothing to the width the chips are measured against (so it can never make them wrap,
+   i.e. never add a line — a taller row shrinks the terminal body, refits xterm and SIGWINCHes
+   tmux, which a state-dependent hint width would otherwise do on every ⌘M toggle at a wrap
+   boundary), then grows into whatever width the chips left over and clips to it. Content is
+   right-aligned in that space; no margin/gap, which would narrow the chips' room by those pixels. */
+.term-node__labeltrail {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+}
+/* The ⌘M hint in that slot (`components/MdViewHintButton.tsx`). Quieter than "+ Label" — a
+   transparent border, no fill until hover, dimmer text — but the SAME box: font size, vertical
+   padding, border width and font family all match, so it can never be the row's tallest item and
+   change the row's height. When the slot is narrow it ellipsizes on one line ("⌘M Mark…", then
+   "…"), and at zero width it is simply clipped away. */
 .term-node__mdhint {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   background: none;
-  border: 0;
+  border: 1px solid transparent;
   border-radius: 4px;
-  padding: 1px 4px;
+  padding: 1px 4px 1px 6px;
   font-size: 10.5px;
   color: rgba(var(--tint-rgb), 0.38);
-  white-space: nowrap;
   cursor: pointer;
 }
 .term-node__mdhint:hover {
   background: rgba(var(--tint-rgb), 0.08);
   color: rgba(var(--tint-rgb), 0.75);
-}
-.term-node__mdhint-chip {
-  font-family: ui-monospace, monospace;
 }
 .kanban-meta__row--labels {
   position: relative;

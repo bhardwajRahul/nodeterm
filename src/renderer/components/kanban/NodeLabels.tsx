@@ -13,9 +13,10 @@ import { LabelPicker } from './LabelPicker'
  * workspace-dirty seam (this component lives outside Canvas). A node only ever renders in the
  * active project, so the active project's board is the right one.
  *
- * `trailing` is an optional slot pinned to the row's RIGHT end (the terminal node's ⌘M hint). It
- * is a slot rather than something the caller positions over the row, so the row's own flex layout
- * owns the placement: the chips never shift, and a wrapping row still keeps it on the last line.
+ * `trailing` is an optional slot at the row's RIGHT end (the terminal node's ⌘M hint). It is a
+ * slot rather than something the caller positions over the row, so the row's own flex layout owns
+ * the placement — and that layout guarantees the slot can never add a line or move a chip: it only
+ * occupies width the chips left unused, clipped to it (see `.term-node__labeltrail`).
  */
 export function NodeLabels({ nodeId, trailing }: { nodeId: string; trailing?: ReactNode }): React.JSX.Element {
   const [open, setOpen] = useState(false)
@@ -34,14 +35,18 @@ export function NodeLabels({ nodeId, trailing }: { nodeId: string; trailing?: Re
 
   return (
     <div className="term-node__labelrow nodrag">
-      <LabelChips labels={labels} size="sm" />
-      <button
-        className="term-node__labeladd"
-        title="Add label"
-        onClick={() => setOpen((v) => !v)}
-      >
-        + Label
-      </button>
+      {/* The chips + "+ Label" wrap inside their OWN group; the row never wraps. That is what
+          keeps the trailing slot out of the wrap flow — see `.term-node__labeltrail`. */}
+      <div className="term-node__labelmain">
+        <LabelChips labels={labels} size="sm" />
+        <button
+          className="term-node__labeladd"
+          title="Add label"
+          onClick={() => setOpen((v) => !v)}
+        >
+          + Label
+        </button>
+      </div>
       {trailing != null && <span className="term-node__labeltrail">{trailing}</span>}
       {open && (
         <>

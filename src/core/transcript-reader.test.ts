@@ -1,5 +1,5 @@
 import fs from 'fs'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   parseTranscriptLines,
   pickSessionName,
@@ -364,5 +364,48 @@ describe('tool bodies in the chat parse', () => {
       { role: 'tool', text: '$ ExitPlanMode' },
       { role: 'tool', text: PLAN }
     ])
+  })
+})
+
+// The title poll runs every 4–15 s per agent node, and each poll used to read + parse a 128 KB
+// tail. The name can only change when the transcript does, so an unchanged (size, mtime) must
+// answer from the cache without touching the file's bytes — while a /rename (the file grows)
+// must still be picked up on the next poll.
+describe('readSessionName — unchanged transcripts are not re-read', () => {
+  const sid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+  const custom = (t: string) => JSON.stringify({ type: 'custom-title', customTitle: t, sessionId: sid })
+  let home: string
+  let file: string
+
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-title-cache-'))
+    vi.spyOn(os, 'homedir').mockReturnValue(home)
+    const dir = path.join(home, '.claude', 'projects', '-proj')
+    fs.mkdirSync(dir, { recursive: true })
+    file = path.join(dir, `${sid}.jsonl`)
+    fs.writeFileSync(file, custom('First') + '\n')
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    fs.rmSync(home, { recursive: true, force: true })
+  })
+
+  // readSmallTail reads a small file with readFile and a large one with open+read — spy on both,
+  // so "no tail read" holds whichever branch the fixture size lands on.
+  it('does not re-read an unchanged transcript', async () => {
+    const readFile = vi.spyOn(fs.promises, 'readFile')
+    const open = vi.spyOn(fs.promises, 'open')
+    expect(await readSessionName(sid)).toBe('First')
+    const reads = readFile.mock.calls.length + open.mock.calls.length
+    expect(reads).toBeGreaterThan(0)
+    expect(await readSessionName(sid)).toBe('First')
+    expect(readFile.mock.calls.length + open.mock.calls.length).toBe(reads)
+  })
+
+  it('re-reads after the transcript changes (e.g. /rename)', async () => {
+    expect(await readSessionName(sid)).toBe('First')
+    fs.appendFileSync(file, custom('Second') + '\n')
+    expect(await readSessionName(sid)).toBe('Second')
   })
 })

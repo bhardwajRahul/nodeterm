@@ -43,7 +43,8 @@ import {
   applyLiveOptions,
   xtermOptionsFromSettings,
   SHIFT_ENTER_SEQ,
-  CO_ATTACH_MOUSE_SEQ
+  CO_ATTACH_MOUSE_SEQ,
+  CO_ATTACH_ALT_SCREEN_SEQ
 } from '../../terminal/terminal-config'
 import { useXtermVisualSettings } from '../../terminal/useXtermVisualSettings'
 import {
@@ -382,6 +383,9 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch, covere
       // never write into a disposed xterm or observe a null host ref (mirrors TerminalNode's
       // post-await onDisposed check).
       if (dead) return
+      // Same as TerminalNode: a joiner (which the modal always is) must enter the alternate
+      // buffer BEFORE the paint — see PtyCreateResult.coAttachAltScreen.
+      if (res.coAttachAltScreen) term.write(CO_ATTACH_ALT_SCREEN_SEQ)
       const paint = seedPaint({
         replay: attachReplay({ parked: false, fresh: res.fresh, hasInitialCommand: false }),
         superseded: false,

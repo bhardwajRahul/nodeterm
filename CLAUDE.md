@@ -419,6 +419,8 @@ Persistence has two layers:
 - **Live terminal sessions** (tmux): terminals continue where they left off across node
   remounts *and* full app restarts, including running processes. See below.
 
+**Autosave does no unchanged work** (`WorkspaceStore.save`): the parse of each `lastWritten` value is cached per raw string, and `workspace.json` is not rewritten when its bytes equal the store's last write AND the file still has the size+mtime+inode that write left — so another instance's rewrite is still answered (the inode catches a same-size rewrite on a coarse-mtime filesystem: every writer publishes by rename), a store's first save and a v2 migration always write, and every other index writer of ours clears the record.
+
 `settings.json` is a separate store (`core/settings-store.ts`, `state/settings.ts`).
 
 ## Projects (tabs)
@@ -912,6 +914,20 @@ session (you can't keep a live OS process across a reboot):
   renderer reads it via `pty.readScrollback` and writes it back into xterm (with a "session
   restored" separator). Warm reattach skips it (tmux already redraws). Deleted with the node in
   `destroySession`.
+  **The periodic capture is paced, serialized and deduplicated** (`snapshotTick`,
+  `core/scrollback-cadence.ts`). A working agent's spinner keeps its session dirty forever, so the
+  old tick spawned a `capture-pane -S -1500` (an ssh exec for a remote node) and rewrote up to
+  256 KB for EVERY busy session, all in the same instant, every 15 s. Now: a dirty session is
+  captured on its first `BUSY_AFTER_TICKS` (4) consecutive dirty ticks, then every
+  `BUSY_EVERY_TICKS`-th (60 s); an off-cadence tick KEEPS the dirty bit, which is what lets
+  detach/quit still take their final capture; an idle tick resets the count. Captures run one at a
+  time on `snapshotChain`, a session whose capture is still queued is never queued twice
+  (`snapshotQueued`), and a failed capture OR a failed disk write re-marks it dirty
+  (`writeScrollbackIfChanged` reports the write; a skipped unchanged capture counts as done). Every write (periodic, detach, quit)
+  goes through `writeScrollbackIfChanged`, which skips a capture whose sha1 matches the last one
+  written; the digest is dropped with the file in `endSession`, so a recreated node always writes.
+  The cost is bounded and deliberate: a continuously busy session's post-reboot replay can be up to
+  ~60 s stale, since the snapshot only serves a machine reboot.
 - **Agent resume** — on a cold start of a node whose `agentId` is in `RESUMABLE_AGENTS`, the
   renderer re-launches the agent CLI: `resumeCommand(agentId, sessionId)` (from the session id
   persisted in `agentStatus` localStorage — `claude --resume`, `codex resume`, `gemini
@@ -1180,7 +1196,31 @@ seed** — the cases are:
   (gated on `persistKey`, on BOTH the screen and resize branches) and the renderer writes
   `CO_ATTACH_MOUSE_SEQ` into the fresh xterm (both `ModalTerminal` and `TerminalNode`). tmux is
   always `mouse on`, so this matches its invariant client state; the enable is idempotent. Was the
-  "can't scroll the kanban card-modal terminal until you press a key" bug.
+  "can't scroll the kanban card-modal terminal until you press a key" bug. **A co-attach joiner
+  ALSO misses tmux's attach-time `\e[?1049h`**, and a renderer reload is a joiner too (it re-joins
+  the SAME still-alive tmux client via `join()`, so tmux never re-attaches it). `join()` therefore
+  sets `coAttachAltScreen` for tmux-backed sessions only — gated on `tmuxBacked && !sessionHost`,
+  never plain-shell/session-host, whose normal-buffer scrollback is their only history — and the
+  renderer writes `CO_ATTACH_ALT_SCREEN_SEQ` **BEFORE** painting (entering the alternate buffer
+  clears the display, so writing it after would erase the paint; TerminalNode skips it once a
+  resync has superseded the seed, since that repaint may already be on screen). **Known
+  limitation of "never plain-shell":** a REMOTE SSH session on a host WITHOUT tmux
+  (`tmuxOrExplain`'s plain login-shell fallback) is still recorded `tmuxBacked` — core cannot tell
+  from here that the remote command degraded — so it too gets the alt switch (and `coAttachMouse`,
+  and `tmuxClient`'s resync re-apply), hiding that shell's normal-buffer scrollback; detecting the
+  degrade is a follow-up. Without it a
+  renderer reload left every terminal on the normal buffer, piling up to 10k lines of scrollback
+  and forcing a layout per output frame — measured 16.1% vs 7.3% CPU for one terminal at
+  20 lines/s, 313 vs 1 forced layouts per 20 s. **A resync repaint loses the same two modes**:
+  `repaintResync`'s `term.reset()` drops ANY terminal — the solo spawn too, not only a joiner —
+  back to the normal buffer and clears mouse tracking, and resyncs happen under backpressure, i.e.
+  on exactly the streaming terminals the alt switch exists for. So every create now reports
+  `PtyCreateResult.tmuxClient` (same `tmuxBacked && !sessionHost` gate, set on spawn AND join), and
+  `repaintResync` writes `CO_ATTACH_ALT_SCREEN_SEQ + CO_ATTACH_MOUSE_SEQ` between the reset and the
+  paint when it is set. Optional on purpose: an older core or relay peer omits it and gets the old
+  behavior (nothing re-applied), never a guess. The recycle banner ("session restarted by another
+  user") is written AFTER the joiner's seed paint for the same reason — written before the alt
+  switch, it sat in a buffer nobody could see.
 
 xterm's own `scrollback` (`xtermScrollback(settings.tmuxScrollback)`, floored at 1000, capped at
 `XTERM_SCROLLBACK_MAX` = 10000) is kept for the sessions tmux does *not* back (a plain shell when
@@ -1630,6 +1670,12 @@ the wire never see any of it):
   are untouched. The real MiniMap regression tests cover ghost/live transitions, empty bounds,
   removals, grouped geometry and camera interaction. When upgrading React Flow, keep those
   tests: the projection deliberately mirrors the state fields consumed by MiniMap.
+  **A pan/zoom frame takes a transform-only fast path**: when `transform` changed and the node
+  collections did not, only the camera fields are copied and a full re-projection follows
+  `MINIMAP_FULL_SYNC_DEBOUNCE_MS` after the move settles (rebuilding them per frame re-rendered
+  every rectangle; measured 402 forced layouts per 20 s pan vs 1 with the map hidden). Identity
+  checks alone cannot replace the full path: xyflow's `updateNodeInternals` mutates `nodeLookup`
+  IN PLACE and then calls `set({})`, so any update that leaves `transform` alone syncs fully.
 - **Memory bounds** (same posture as park/WebGL: a lever must not end live work): a ghost is
   hidden, so the existing Browser Memory Saver discards its guest after `BROWSER_DISCARD_MS`
   unless loading/audible/agent-driven — `onGuestDiscarded` then drops the entry (a husk would hold
@@ -1817,7 +1863,11 @@ else, and its context links must keep classifying across restarts).
   with base64, transferring less than 1.6 MiB including alignment/framing; idle replies contain
   only the size/range header. The encoded dd exit status must survive the shell pipeline:
   pipeline success alone can hide a failed read. Short/malformed replies and SSH failures throw,
-  retain the cursor, and back off from 2s to 60s with payload-free diagnostics. Bootstrap and
+  retain the cursor, and back off from 2s to 60s with payload-free diagnostics. A SEPARATE idle
+  backoff (`idleDelayMs`) stretches the 1 s poll after three consecutive empty successful reads
+  (2/4/8 s, capped at 10 s) and is reset by any data-bearing read and by every same-ref `track()`
+  — i.e. every hook POST for the session, which is what keeps a `<task-notification>` (it rides
+  a UserPromptSubmit hook) at ~1 s latency; never merge it with the failure backoff. Bootstrap and
   detected truncation restore usage without replaying historical task notifications/tool results,
   including a historical partial line completed later. A changed remote reference replaces its
   tracking generation so stale in-flight replies cannot publish. Server Edition uses the local
@@ -2333,6 +2383,12 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
     over `pty.readSessionName`. `TerminalNode` polls it (~4 s) **only once this node's own sessionId
     is known** and **while the title still auto-tracks** (`data.titleAuto`, default true on agent
     nodes), and adopts it as the `title`. `term.onTitleChange` now feeds the `session` chip only.
+    **A poll of an unchanged transcript reads no bytes**: the local read is gated on the resolved
+    path's (size, mtime) (`titleCache`, bounded at 500, a failed tail read never cached), and the
+    remote one (`main/remote-title-reader.ts`) on the remote context tail's `offsetFor` for the SAME
+    path — that offset is the file size at the tail's last read, so a remote `/rename` lands within
+    the tail's idle backoff (real gaps between idle reads ≈3/5/9/11 s) PLUS one title poll
+    (4–15 s); an untracked session (offset unknown) always reads.
   - **title → session (write):** the moment the user renames the node by hand (header rename box /
     ✦ AI-name / sidebar / command palette → all funnel through `applyManualTitle` or
     `renameSession`), `titleAuto` flips to **false** (polling stops overwriting) and the chosen name
@@ -5226,6 +5282,29 @@ shared pause — `nt-unread-glow` rests at `opacity: 0`, so pausing it is a coin
 glow that says "this agent finished while you were away" is still on screen when you come back to
 look for it. `hud.css` is deliberately excluded: the notch HUD's window is never focused, so the
 shared gate would freeze it permanently rather than while nobody is looking.
+
+**The working glow is BOUNDED; the unread and attention glows are not.** The idle gate only helps an
+unfocused window, and an agent mid-turn in a FOCUSED one kept `nt-working-glow` looping for the
+whole turn — MEASURED (production build, M2, focused): one visible working node cost **+3 points
+total CPU and ~25 style recalcs/s** for as long as it ran. It now runs 4 cycles of 2.6 s (~10 s) and
+rests at `opacity: 0.7`, the same static-lit value the idle gate and Reduce Motion already hold it
+at; the keyframes start and end at 0.7, so the settle is seamless. A new turn re-adds `.working`,
+which restarts the pulse — and so does anything else that re-applies the animation: a window
+refocus (the idle gate sets `animation: none`, so lifting it starts the shorthand afresh) and a node
+remount (a project switch, a park re-adopt) each replay the four pulses. Still bounded every time. Unread and attention stay infinite on purpose — they exist to pull the
+eye, and the idle gate covers the unfocused case. `styles.animation-gate.test.ts` pins the bounded
+shorthand, the resting opacity and the keyframe endpoints.
+
+**A camera move freezes the viewport's raster scale, and only for the move.** `onCanvasMoveStart`
+adds `canvas-camera-moving` to the flow wrapper in EVERY appearance (before the glass-only
+early-return — it is not a glass feature), and `.canvas-camera-moving .react-flow__viewport` sets
+`will-change: transform`, so the compositor scales the already-rastered layer instead of
+re-rasterising every node's DOM at each intermediate zoom. MEASURED (12 WebGL terminals, 60 Hz
+synthetic wheel zoom, M2, production build): **41–48% → 30–36%** total CPU, GPU process **22% →
+15%**. It MUST stay transient: `onCanvasMoveEnd` removes the class 150 ms after the move settles so
+text re-rasters sharp at the final scale — a permanent `will-change` on the viewport leaves every
+terminal blurry after a zoom. `canvas/camera-moving.test.ts` pins both halves (the rule is scoped
+to the class, and no bare `.react-flow__viewport` rule carries `will-change`).
 
 ## Remote access (phone relay) — free, not Pro
 

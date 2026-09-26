@@ -23,11 +23,23 @@ const POLL_MS = 1000
 // context-tail.ts stays untouched; value mirrors its INITIAL_READ_CAP.
 const INITIAL_READ_CAP = 1024 * 1024 // 1 MB
 
+/** Extra wait before the next read after `streak` consecutive EMPTY reads. The first three stay at
+ *  the 1 s tick (a turn's output usually arrives within seconds); then 2/4/8 s, capped at 10 s.
+ *  Any hook event for the session resets it (track()), so a waking agent is picked up at once. */
+export function idleDelayMs(streak: number): number {
+  if (streak <= 3) return 0
+  return Math.min(10_000, 1000 * 2 ** (streak - 3))
+}
+
 interface Tracked {
   ref: RemoteFileRef
   offset: number | null
   failures: number
   retryAt: number
+  // Idle backoff, separate from the failure backoff above: consecutive successful EMPTY reads,
+  // and the time before which the tick skips this session (see idleDelayMs).
+  idleStreak: number
+  idleUntil: number
   suppressCarry: boolean
   used: number
   window: number
@@ -51,6 +63,8 @@ export interface RemoteContextTail {
   untrack(sessionId: string | undefined): void
   /** The transcript path currently tracked for a session, if any. */
   pathFor(sessionId: string | undefined): string | undefined
+  /** Byte offset of the last successful read (the remote file's size then), or null. */
+  offsetFor(sessionId: string | undefined): number | null
 }
 
 export function createRemoteContextTail(
@@ -110,7 +124,7 @@ export function createRemoteContextTail(
 
   // One bounded read per tick; retain the last good meter through transport failures.
   const read = async (sessionId: string, t: Tracked): Promise<void> => {
-    if (t.reading || Date.now() < t.retryAt) return
+    if (t.reading || Date.now() < t.retryAt || Date.now() < t.idleUntil) return
     t.reading = true
     try {
       const result = await remoteFile.readContextWindow(t.ref, t.offset, INITIAL_READ_CAP)
@@ -121,6 +135,13 @@ export function createRemoteContextTail(
       }
       t.offset = result.newOffset
       if (result.data.length) scan(sessionId, t, result.data, result.initial)
+      if (!result.initial && result.data.length === 0) {
+        t.idleStreak++
+        t.idleUntil = Date.now() + idleDelayMs(t.idleStreak)
+      } else {
+        t.idleStreak = 0
+        t.idleUntil = 0
+      }
       t.failures = 0
       t.retryAt = 0
     } catch {
@@ -162,6 +183,10 @@ export function createRemoteContextTail(
       if (existing && existing.ref.path === ref.path &&
           existing.ref.controlPath === ref.controlPath &&
           JSON.stringify(existing.ref.conn) === JSON.stringify(ref.conn)) {
+        // A hook just arrived for this session — the transcript is about to grow, so drop the
+        // idle backoff and let the next tick read it.
+        existing.idleStreak = 0
+        existing.idleUntil = 0
         if (sessionWindow !== undefined && sessionWindow !== existing.sessionWindow) {
           existing.sessionWindow = sessionWindow
           existing.lastWindow = 0 // publish even if only provenance changed
@@ -174,6 +199,8 @@ export function createRemoteContextTail(
         offset: null,
         failures: 0,
         retryAt: 0,
+        idleStreak: 0,
+        idleUntil: 0,
         suppressCarry: false,
         used: 0,
         window: 0,
@@ -205,6 +232,10 @@ export function createRemoteContextTail(
     pathFor(sessionId) {
       if (!sessionId) return undefined
       return sessions.get(sessionId)?.ref.path
+    },
+    offsetFor(sessionId) {
+      if (!sessionId) return null
+      return sessions.get(sessionId)?.offset ?? null
     }
   }
 }

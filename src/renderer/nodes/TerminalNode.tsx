@@ -5108,6 +5108,13 @@ export function TerminalNode({
     const rt = e.relatedTarget as Node | null
     if (!rt || !(e.currentTarget as HTMLElement).contains(rt)) setDropping(false)
   }
+  // Uploads go over the master this node's PTY runs on — its scope, which for an attached node is
+  // the host attachment, not the (local) project. Shared by the terminal drop and the ⌘M composer's
+  // attach, so the two can never upload one file to two different machines.
+  const dropProjectId = (): string => {
+    const dropConn = data.ssh as SshConnection | undefined
+    return dropConn ? sshConnectionScope(dropConn) : useProjects.getState().activeProjectId
+  }
   /**
    * Files arriving by DROP or by PASTE become paths in the terminal — what a native terminal does
    * on a drop, and the only thing a shell (or an agent reading its prompt) can act on. Shared so
@@ -5127,12 +5134,7 @@ export function TerminalNode({
       // Remote terminal: uploading over the ControlMaster takes seconds and pastes nothing until
       // it's done, so show an overlay while it runs — without it a drop looks like it silently did
       // nothing. (The upload + REMOTE-path resolution itself lives in the shared droppedPaths.)
-      // Uploads go over the master this node's PTY runs on — its scope, which for an attached
-      // node is the host attachment, not the (local) project.
-      const dropConn = data.ssh as SshConnection | undefined
-      const projectId = dropConn
-        ? sshConnectionScope(dropConn)
-        : useProjects.getState().activeProjectId
+      const projectId = dropProjectId()
       if (uploadNoteTimer.current) clearTimeout(uploadNoteTimer.current)
       setUploadNote({
         text: `Uploading ${files.length === 1 ? files[0].name : `${files.length} files`}…`,
@@ -6070,6 +6072,14 @@ export function TerminalNode({
                 // system-root one. Spawn/env identity is unaffected — that stays creation-time.
                 accountId={accountForReads}
                 agentId={agentId}
+                // The composer's attach resolves files exactly as a drop onto THIS terminal does.
+                pathsForFiles={(files) =>
+                  droppedPaths(files, {
+                    sshRemoteTmux: !!data.sshRemoteTmux,
+                    projectId: data.sshRemoteTmux ? dropProjectId() : ''
+                  })
+                }
+                onShowTerminal={() => updateNodeData(id, () => ({ mdMode: false }))}
               />
             </Suspense>
           ) : (

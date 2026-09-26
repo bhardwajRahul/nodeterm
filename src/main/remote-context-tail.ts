@@ -45,11 +45,14 @@ interface Tracked {
   window: number
   parsedWindow: number | null
   model: string | null
+  /** Reasoning effort of the latest request — see parseLatestUsage (context-tail.ts). */
+  effort: string | null
   // In-flight guard: a slow ssh read must not overlap with the next tick.
   reading: boolean
   // Last pushed snapshot — a push fires only when one of these changes.
   lastUsed: number
   lastModel: string | null
+  lastEffort: string | null
   lastWindow: number
   sessionWindow: number | null
   /** Partial trailing line held back until the next read completes it (see subagent-tail.ts). */
@@ -93,6 +96,7 @@ export function createRemoteContextTail(
     if (latest) {
       t.used = latest.used
       t.model = latest.model ?? t.model
+      t.effort = latest.effort ?? null
       t.parsedWindow = latest.window ?? t.parsedWindow
     }
     // A historical partial line may finish on a later poll; it still must not emit events.
@@ -115,6 +119,7 @@ export function createRemoteContextTail(
       windowTokens: t.window,
       usedPercent,
       model: t.model,
+      ...(t.effort !== null && { effort: t.effort }),
       windowSource: customParse ? 'transcript' : t.sessionWindow === null ? 'estimate' : 'session-env',
       updatedAt: Date.now()
     }
@@ -159,11 +164,12 @@ export function createRemoteContextTail(
     const window = customParse ? t.parsedWindow : t.sessionWindow ?? cachedWindowFor(t.model)
 
     if (sessions.get(sessionId) !== t) return
-    if (t.used > 0 && window !== null && window > 0 && (t.used !== t.lastUsed || t.model !== t.lastModel || window !== t.lastWindow)) {
+    if (t.used > 0 && window !== null && window > 0 && (t.used !== t.lastUsed || t.model !== t.lastModel || t.effort !== t.lastEffort || window !== t.lastWindow)) {
       t.window = window
       push(sessionId, t)
       t.lastUsed = t.used
       t.lastModel = t.model
+      t.lastEffort = t.effort
       t.lastWindow = window
     }
   }
@@ -206,9 +212,11 @@ export function createRemoteContextTail(
         window: 0,
         parsedWindow: null,
         model: null,
+        effort: null,
         reading: false,
         lastUsed: 0,
         lastModel: null,
+        lastEffort: null,
         lastWindow: 0,
         sessionWindow: sessionWindow ?? null,
         carry: null

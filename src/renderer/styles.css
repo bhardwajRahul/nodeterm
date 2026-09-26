@@ -3445,24 +3445,121 @@ body,
   padding: 8px;
   border-top: 1px solid rgba(var(--tint-rgb), 0.08);
 }
+/* The claude.ai-style composer (ChatPanel): ONE rounded box holding the textarea on top and a
+   compact toolbar under it — "+" attach on the left; model label, muted effort label and the mic
+   on the right. The focus ring belongs to the BOX, so the textarea itself draws no border. */
+.term-chat__composer {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 6px 4px;
+  background: rgba(var(--tint-rgb), 0.06);
+  border: 1px solid rgba(var(--tint-rgb), 0.12);
+  border-radius: 12px;
+  transition: border-color 0.12s ease;
+}
+.term-chat__composer:focus-within {
+  border-color: var(--accent);
+}
+.term-chat__composer--drop {
+  border-color: var(--accent);
+  border-style: dashed;
+}
 .term-chat__input {
   box-sizing: border-box;
   width: 100%;
   resize: none;
-  padding: 8px;
+  padding: 4px 6px;
   font-family: inherit;
   font-size: 13px;
   color: var(--text-strong);
-  background: rgba(var(--tint-rgb), 0.06);
-  border: 1px solid rgba(var(--tint-rgb), 0.12);
-  border-radius: 8px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
 }
 .term-chat__input:focus {
   outline: none;
-  border-color: var(--accent);
 }
 .term-chat__input:disabled {
   opacity: 0.5;
+}
+.term-chat__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  min-height: 26px;
+}
+.term-chat__toolbar-spacer {
+  flex: 1 1 auto;
+  min-width: 4px;
+}
+.term-chat__tool-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.term-chat__tool-btn svg {
+  width: 15px;
+  height: 15px;
+}
+.term-chat__tool-btn:hover:not(:disabled),
+.term-chat__model:hover:not(:disabled),
+.term-chat__effort:hover:not(:disabled) {
+  color: var(--text-strong);
+  background: rgba(var(--tint-rgb), 0.08);
+}
+.term-chat__tool-btn:disabled,
+.term-chat__model:disabled,
+.term-chat__effort:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+/* The model name reads as the primary label, effort beside it muted — the reference's
+   "Fable 5.1  Medium". Both are buttons: a click opens the agent's own picker in the terminal. */
+.term-chat__model,
+.term-chat__effort {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 3px 6px;
+  font-family: inherit;
+  font-size: 12px;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.term-chat__model {
+  color: var(--text);
+}
+.term-chat__effort {
+  color: var(--muted);
+}
+.term-chat__attach-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  color: var(--muted);
+}
+.term-chat__attach-note--failed {
+  color: var(--danger);
 }
 .term-chat__bar-end {
   display: flex;

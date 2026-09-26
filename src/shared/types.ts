@@ -2736,6 +2736,12 @@ export interface ContextWindowUsage {
   usedPercent: number
   /** Model id from the transcript, or null if not seen yet. */
   model: string | null
+  /**
+   * Reasoning effort of the latest request, as Claude Code records it on the transcript's assistant
+   * record (`low`/`medium`/`high`/`xhigh`/`max` on 2.1.283). Absent = not recorded: another agent,
+   * an older host or CLI, or a model that takes no effort. Shown by the ⌘M composer's toolbar.
+   */
+  effort?: string
   updatedAt: number
 }
 

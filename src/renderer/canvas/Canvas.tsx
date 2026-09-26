@@ -157,6 +157,7 @@ import { WelcomeScreen } from '../components/WelcomeScreen'
 import { CloneRepoDialog } from '../components/CloneRepoDialog'
 import { markMobileLaunchSeen, shouldShowMobileLaunch } from '../lib/mobileLaunch'
 import type { DictationTarget } from '../components/DictationOverlay'
+import { dictationTargetFromRequest } from '../lib/chatComposerDictation'
 import { describeOs, REPO_URL } from '../lib/bugReport'
 import { shouldReleasePaneFocus } from '../lib/paneFocus'
 import {
@@ -4457,15 +4458,15 @@ export function Canvas() {
   // instance mounts fresh and starts recording into the new target immediately.
   useEffect(() => {
     const onDictate = (e: Event): void => {
-      const d = (e as CustomEvent<{ nodeId: string }>).detail
+      // `composerId` = the mic in a ⌘M chat composer: the take goes into that composer's textarea
+      // (lib/chatComposerDictation.ts), not the pane. Absent = the header mic, unchanged.
+      const d = (e as CustomEvent<{ nodeId: string; composerId?: string }>).detail
       if (!d?.nodeId) return
       const n = nodesRef.current.find((x) => x.id === d.nodeId)
       if (!n) return
-      setDictationTarget({
-        kind: 'terminal',
-        nodeId: n.id,
-        title: (n.data.title as string) || 'Untitled'
-      })
+      setDictationTarget(
+        dictationTargetFromRequest({ nodeId: n.id, composerId: d.composerId }, (n.data.title as string) || 'Untitled')
+      )
       setDictationOpen(true)
       setDictationNonce((prev) => prev + 1)
     }

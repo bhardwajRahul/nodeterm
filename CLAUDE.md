@@ -2543,6 +2543,35 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   `readQuestions`), and only while the pane is in a dialog state. They send a `PermissionAnswer`
   through `answerPermission`; a refusal is a quiet retryable error pointing at the terminal. Plan's
   default button is `restore` — never auto. See docs/hook-reply-approvals.md.
+  **The composer (2026-09-26, claude.ai-style)** is one rounded box — textarea on top, a toolbar
+  under it: "+" attach on the left; model label, muted effort label and a mic on the right (pure
+  decisions in `lib/chatComposer.ts`). Four rules: (1) **attach = paths in the DRAFT, resolved the
+  way a drop onto that node's terminal is** — the mount site passes `pathsForFiles` built on
+  `droppedPaths` with the node's own SSH scope (`dropProjectId` in TerminalNode; `spawn.ssh` in the
+  card modal), so an SSH node's file is uploaded to its HOST and the composer never grows a second
+  resolver; "+" / drop / file-or-screenshot paste all feed it, and nothing is ever sent. (2) **The
+  mic targets THIS composer's textarea, never the pane**: `nodeterm:dictate` carries a per-MOUNT
+  `composerId` (the canvas node and the card modal can both mount one session's composer),
+  `DictationTarget` gained `kind: 'chat-composer'`, and the overlay hands the take over
+  `nodeterm:chat-dictation` (`lib/chatComposerDictation.ts`), saying so if the composer closed
+  mid-take. (3) **The labels read the ContextMeter's store** (`useContextUsage` — ONE reader) and
+  a click TYPES the agent's own picker command (`/model`, `/effort`) through the SAME
+  `chatSendRefusal` gate as a message, re-read at click time, then flips to the terminal
+  (`onShowTerminal`); `sendText` must answer `=== true` to flip. Measured for claude only
+  (`composerPickerCommand`, via `capabilityAgentId`): any other agent shows no label, since a label
+  that opens nothing is a lie. Hidden when the model is unknown; effort hidden with it. (4) **Effort
+  was measured, not assumed** (Claude Code 2.1.283): read = the top-level `effort` the CLI writes on
+  every assistant record it sent with one (`...E!==void 0&&{effort:E}`; its own history reader
+  walks the same field; a transcript flips `medium`→`xhigh` on the first request after `/effort`);
+  change = `/effort` (a `local-jsx` picker, levels `low|medium|high|xhigh|max`). `parseLatestUsage`
+  takes it from the LATEST usage record only — never carried forward, a record without it means
+  that model takes no effort — and both context tails push on an effort-only change
+  (`ContextWindowUsage.effort`, optional: older hosts and other agents simply omit it). Like the
+  model, it lags until the next request. Narrow composers drop effort first, then the model
+  (`composerToolbarLayout`); "+" and the mic stay. No voice-conversation button: there is no
+  terminal equivalent. Surfaces: Desktop + Server Edition identical (dictation and uploads already
+  bridge — `files.saveUpload`, `speech.*`); SSH nodes upload to the host; kanban card modal shares
+  ChatPanel and wires both props; relay tabs keep the panel's existing refusal; mobile N/A.
 - **Subagent visualization** (agents in `SUBAGENT_CAPABLE`) — `subagent-start`/`subagent-end`
   normalized events (from Claude's `PreToolUse`/`PostToolUse` on tool `Agent`/`Task`, correlated
   by `tool_use_id`) drive a transient `state/agentNodes.ts` store. Claude launches subagents

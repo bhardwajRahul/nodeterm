@@ -2443,8 +2443,9 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   "Here is Claude's plan" — and an `AskUserQuestion` question + options unreadable in ⌘M, the one
   place meant for reading them. `core/chat-tool-body.ts` (pure) fills the tool part's optional
   `body` for exactly those two tools (`input.plan`; the questions rendered as markdown), capped at
-  64 KB, degrading to no body (the old chip) on any other shape; ChatPanel shows a part with a
-  body as an expanded "Plan"/"Question" card through `MarkdownText` with its result under it, and
+  64K characters (never splitting an open code fence or a surrogate pair; model-authored labels are
+  kept to one line with emphasis escaped), degrading to no body (the old chip) on any other shape;
+  ChatPanel shows a part with a body as an expanded "Plan"/"Question" card through `MarkdownText` with its result under it, and
   the find-bar index (`linesFrom`) indexes the body in full like assistant text.
 - **Subagent visualization** (agents in `SUBAGENT_CAPABLE`) — `subagent-start`/`subagent-end`
   normalized events (from Claude's `PreToolUse`/`PostToolUse` on tool `Agent`/`Task`, correlated

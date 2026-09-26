@@ -60,7 +60,7 @@ describe('toolBody — AskUserQuestion', () => {
     )
   })
 
-  it('notes multiple choice and separates several questions', () => {
+  it('notes a multi-select and separates several questions', () => {
     const input = {
       questions: [
         { question: 'Pick features', header: 'Scope', multiSelect: true, options: [{ label: 'A' }, { label: 'B' }] },
@@ -68,7 +68,7 @@ describe('toolBody — AskUserQuestion', () => {
       ]
     }
     expect(toolBody('AskUserQuestion', input)).toBe(
-      '**Scope**\n\nPick features _(multiple choice)_\n\n- **A**\n- **B**\n\nShip today?\n\n- **Yes**'
+      '**Scope**\n\nPick features _(select all that apply)_\n\n- **A**\n- **B**\n\nShip today?\n\n- **Yes**'
     )
   })
 
@@ -95,5 +95,44 @@ describe('toolBody — every other tool', () => {
   it('has no body (it stays a collapsed chip)', () => {
     expect(toolBody('Bash', { command: 'ls', plan: 'not a plan' })).toBeUndefined()
     expect(toolBody('ToolSearch', { query: 'x' })).toBeUndefined()
+  })
+})
+
+describe('toolBody — hardening', () => {
+  it('collapses newlines inside labels and descriptions so they cannot inject list items or headings', () => {
+    const input = {
+      questions: [
+        {
+          question: 'Pick one\n\nThe question keeps its own paragraphs.',
+          options: [{ label: 'A\n# heading', description: 'first line\n- injected item\r\nmore' }]
+        }
+      ]
+    }
+    expect(toolBody('AskUserQuestion', input)).toBe(
+      'Pick one\n\nThe question keeps its own paragraphs.\n\n- **A # heading** — first line - injected item more'
+    )
+  })
+
+  it('escapes emphasis characters inside the bold header and label', () => {
+    const input = {
+      questions: [{ header: 'use **all**_x', question: 'Q?', options: [{ label: 'snake_case *ptr', description: 'keeps *its* _style_' }] }]
+    }
+    expect(toolBody('AskUserQuestion', input)).toBe(
+      '**use \\*\\*all\\*\\*\\_x**\n\nQ?\n\n- **snake\\_case \\*ptr** — keeps *its* _style_'
+    )
+  })
+
+  it('closes an open code fence before the truncation marker', () => {
+    const plan = 'intro\n```ts\n' + 'x'.repeat(TOOL_BODY_CAP) + '\n```\nafter'
+    const body = toolBody('ExitPlanMode', { plan })!
+    expect(body.endsWith('\n```' + TOOL_BODY_TRUNCATED)).toBe(true)
+    const fences = body.split('\n').filter((l) => l.trimStart().startsWith('```')).length
+    expect(fences % 2).toBe(0)
+  })
+
+  it('does not add a fence when the kept slice has balanced fences', () => {
+    const plan = '```\ncode\n```\n' + 'y'.repeat(TOOL_BODY_CAP)
+    const body = toolBody('ExitPlanMode', { plan })!
+    expect(body.endsWith('y' + TOOL_BODY_TRUNCATED)).toBe(true)
   })
 })

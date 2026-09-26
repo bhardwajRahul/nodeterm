@@ -2194,8 +2194,10 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   an SSH host (rewritten only at connect) silently ignores JSON while the write succeeds, so the hook
   server keeps `held` only for `clientRevision >= MIN_STRUCTURED_ANSWER_REVISION` and core refuses a
   structured answer (or a plain plan allow) for a ticket it did not record as capable — never a false
-  "answered". The renderer gets `held: {pendingId, toolName}` on the event/store (kept while blocked OR
-  waiting), separate from the approve/deny `pendingId` the mirror strips from a question. Desktop local + SSH, Server Edition local;
+  "answered". The renderer gets `held: {pendingId, toolName, questions?}` on the event/store (kept while blocked
+  OR waiting), separate from the approve/deny `pendingId` the mirror strips from a question;
+  `questions` (a held AskUserQuestion's exact question texts, from the one `readQuestions`) is what
+  the ⌘M answer controls match their card by — absent = unreadable input = no controls. Desktop local + SSH, Server Edition local;
   relay unchanged; phone keeps `allow`/`deny` (its plan approve now works via the script mapping).
 - **Per-node hook identity** (`src/core/agents/node-auth-*.ts`, `node-token-*.ts`,
   `node-identity-policy.ts` — full write-up in **`docs/node-identity.md`**) — the shared bearer proves

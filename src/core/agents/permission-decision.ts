@@ -21,6 +21,7 @@ import {
   isSafeToolName,
   type PermissionAnswer
 } from '../../shared/agents/permission-answer'
+import type { NormalizedAgentEvent } from '../../shared/agents/normalize'
 
 /**
  * Every JSON answer core writes starts with exactly these bytes, followed by `"allow"` or `"deny"`.
@@ -31,13 +32,16 @@ import {
 export const PERMISSION_DECISION_PREFIX =
   '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":'
 
-/** Largest JSON answer core will write and the script will print. A question echo carries the
+/** Largest JSON answer core will write and the script will print, in UTF-8 BYTES (core measures
+ *  with `Buffer.byteLength`; the script with `wc -c` on the file, never `${#…}`, which counts
+ *  characters under bash and bytes under dash). A question echo carries the
  *  request's own questions (option descriptions, previews), so it is generous; anything larger is
  *  refused rather than truncated (a truncated decision is invalid JSON). */
 export const PERMISSION_DECISION_MAX_BYTES = 64 * 1024
 
-/** How much of the pending request file a reader takes. The file is the raw hook payload; a plan
- *  can be long. Past this the request is treated as unreadable (structured answers refuse). */
+/** How much of the pending request file a reader takes, in UTF-8 BYTES. The file is the raw hook
+ *  payload; a plan can be long. Past this the request is treated as unreadable (structured answers
+ *  refuse). */
 export const PENDING_REQUEST_MAX_BYTES = 512 * 1024
 
 /**
@@ -51,7 +55,8 @@ export const PENDING_REQUEST_MAX_BYTES = 512 * 1024
  */
 export const PERM_WAIT_SECS_INTERACTIVE = 540
 
-/** Caps on user-typed text. Generous for a person, small against the decision budget. */
+/** Caps on user-typed text, in UTF-16 code units (`string.length`) — a person-sized limit, not a
+ *  wire limit; the whole decision's BYTE cap above is what bounds the file. */
 export const PLAN_REVISE_MAX_CHARS = 8000
 export const FREE_TEXT_MAX_CHARS = 8000
 
@@ -73,7 +78,7 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 
 /** Parse the pending request file (the raw PermissionRequest hook payload). Null = not usable. */
 export function parsePendingRequest(text: string): PendingRequest | null {
-  if (typeof text !== 'string' || !text || text.length > PENDING_REQUEST_MAX_BYTES) return null
+  if (typeof text !== 'string' || !text || Buffer.byteLength(text, 'utf8') > PENDING_REQUEST_MAX_BYTES) return null
   let raw: unknown
   try {
     raw = JSON.parse(text)
@@ -266,6 +271,60 @@ export function isBoundedAnswerContent(content: string): boolean {
   )
 }
 
+/**
+ * The first managed-script revision that understands a JSON answer (and maps a plain `allow` on a
+ * plan). `MANAGED_SCRIPT_REVISION` must be >= this — pinned in managed-script.answer.test.ts. It
+ * lives HERE rather than in managed-script.ts because that module imports this one.
+ *
+ * Why a revision gate at all: an SSH host gets a new script only at CONNECT, so a long-connected
+ * project can hold a request with an older script. That script reads a JSON answer as neither
+ * `allow` nor `deny`, deletes it and prints nothing — the TUI dialog stays — while the write itself
+ * succeeded. Without this gate core would report success and the shells would flip NEEDS YOU to
+ * "working" over an agent still waiting in its TUI.
+ */
+export const MIN_STRUCTURED_ANSWER_REVISION = 5
+
+/** Tickets whose PermissionRequest was posted by a script >= MIN_STRUCTURED_ANSWER_REVISION.
+ *  Process-local and bounded: the only producer is this process's hook server, so a ticket we never
+ *  heard about (another instance's, or from before a restart) is simply not capable. */
+const structuredTickets = new Set<string>()
+const STRUCTURED_TICKETS_MAX = 1024
+
+export function isStructuredTicket(pendingId: string): boolean {
+  return structuredTickets.has(pendingId)
+}
+
+/** Test seam. */
+export function _resetStructuredTicketsForTest(): void {
+  structuredTickets.clear()
+}
+
+/**
+ * Label a normalized hook event by the posting script's revision (called by the hook server, the
+ * one place `clientRevision` is known, so both shells get it). A held request from a capable
+ * script is recorded as a structured ticket and keeps `held`; from an older (or unstamped) script
+ * `held` is DROPPED, so no surface offers controls the hook cannot honor. Everything else passes
+ * through untouched (same reference).
+ */
+export function labelHeldForRevision(
+  ev: NormalizedAgentEvent,
+  clientRevision: number | undefined
+): NormalizedAgentEvent {
+  if (!ev.held) return ev
+  if (typeof clientRevision === 'number' && clientRevision >= MIN_STRUCTURED_ANSWER_REVISION) {
+    structuredTickets.delete(ev.held.pendingId)
+    structuredTickets.add(ev.held.pendingId)
+    while (structuredTickets.size > STRUCTURED_TICKETS_MAX) {
+      const oldest = structuredTickets.values().next().value
+      if (oldest === undefined) break
+      structuredTickets.delete(oldest)
+    }
+    return ev
+  }
+  const { held: _dropped, ...rest } = ev
+  return rest
+}
+
 /** The I/O legs of one answer: read the pending request text (null = missing), write the answer. */
 export interface HeldPermissionIo {
   readPending(): Promise<string | null>
@@ -279,6 +338,7 @@ export interface HeldPermissionIo {
  * Resolves `{ok:false}` without writing on any refusal; never throws.
  */
 export async function answerHeldPermission(
+  pendingId: string,
   payload: { decision?: unknown; answer?: unknown },
   io: HeldPermissionIo
 ): Promise<{ ok: boolean; decision?: 'allow' | 'deny' }> {
@@ -289,13 +349,22 @@ export async function answerHeldPermission(
         ? ({ kind: payload.decision } as PermissionAnswer)
         : null
   if (!answer) return { ok: false }
+  const capable = isStructuredTicket(pendingId)
+  // A structured answer to an OLDER script would be written, silently ignored, and reported as
+  // success (see MIN_STRUCTURED_ANSWER_REVISION). Refuse before touching the host.
+  if (answer.kind !== 'allow' && answer.kind !== 'deny' && !capable) return { ok: false }
   let text: string | null = null
   try {
     text = await io.readPending()
   } catch {
     text = null
   }
-  const built = buildPermissionDecision(text === null ? null : parsePendingRequest(text), answer)
+  const pending = text === null ? null : parsePendingRequest(text)
+  // Same false success for a plain allow on a plan: an older script prints a BARE allow, which
+  // Claude drops. Only refused when we positively know it is a plan held by a non-capable script —
+  // an unreadable request keeps the legacy fail-open write.
+  if (answer.kind === 'allow' && pending?.toolName === EXIT_PLAN_MODE_TOOL && !capable) return { ok: false }
+  const built = buildPermissionDecision(pending, answer)
   if (!built.ok) return { ok: false }
   let written = false
   try {

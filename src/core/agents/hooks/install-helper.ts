@@ -16,11 +16,11 @@ import { updateSettingsFile } from './settings-file'
 import path from 'path'
 import { homedir } from 'os'
 import { readFileSync, writeFileSync, mkdirSync, chmodSync, rmSync } from 'fs'
-import type { ManagedHookEvent } from '@shared/agents/hook-events'
+import { managedEventName, type ManagedHookEvent } from '@shared/agents/hook-events'
 import { renameAtomicSync, tempNameFor } from '../../fs-atomic'
 import { buildManagedScript } from './managed-script'
 
-type HookDef = { matcher?: string; hooks?: { type: string; command: string }[] }
+type HookDef = { matcher?: string; hooks?: { type: string; command: string; timeout?: number }[] }
 type Settings = { hooks?: Record<string, HookDef[]>; [k: string]: unknown }
 
 /** Public alias for the hook settings shape, shared by local + remote merge callers. */
@@ -175,10 +175,12 @@ function stripManaged(defs: HookDef[], isOurs: (command?: string) => boolean): H
 }
 
 /** A subscription's event name, whichever form it was declared in. */
-const eventNameOf = (e: ManagedHookEvent): string => (typeof e === 'string' ? e : e.event)
+const eventNameOf = managedEventName
 /** The matcher to write for it — undefined for the plain string form, so nothing changes for the
  *  agents that never needed one (grok's tool events are the only case; see ManagedHookEvent). */
 const matcherOf = (e: ManagedHookEvent): string | undefined => (typeof e === 'string' ? undefined : e.matcher)
+/** The handler `timeout` (seconds) — only claude's held PermissionRequest declares one. */
+const timeoutOf = (e: ManagedHookEvent): number | undefined => (typeof e === 'string' ? undefined : e.timeout)
 
 /**
  * Pure: make the config's managed hooks EXACTLY ours — our command on every event in `events`, and
@@ -224,12 +226,16 @@ export function mergeManagedHook(
   for (const e of events) {
     const ev = eventNameOf(e)
     const matcher = matcherOf(e)
+    const timeout = timeoutOf(e)
     const existing = stripManaged(definitionsAt(ev), isOurs)
     // Spread the matcher CONDITIONALLY: an explicit `matcher: undefined` would serialize as a
     // missing key here but still change the object shape snapshots compare. The test is
     // `!== undefined`, not truthiness — the type permits `matcher: ''`, and silently dropping an
     // empty matcher would emit a subscription that does not say what its declaration said.
-    existing.push({ ...(matcher !== undefined ? { matcher } : {}), hooks: [{ type: 'command', command }] })
+    existing.push({
+      ...(matcher !== undefined ? { matcher } : {}),
+      hooks: [{ type: 'command', command, ...(timeout !== undefined ? { timeout } : {}) }]
+    })
     next.hooks![ev] = existing
   }
   const managedEvents = new Set(events.map(eventNameOf))

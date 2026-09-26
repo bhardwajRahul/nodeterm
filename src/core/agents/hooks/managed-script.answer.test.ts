@@ -11,17 +11,18 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
-import { buildManagedScript } from './managed-script'
+import { buildManagedScript, MANAGED_SCRIPT_REVISION } from './managed-script'
 import {
   buildPermissionDecision,
   parsePendingRequest,
   PERMISSION_DECISION_MAX_BYTES,
   PERMISSION_DECISION_PREFIX,
   PERM_WAIT_SECS_INTERACTIVE,
+  MIN_STRUCTURED_ANSWER_REVISION,
   type PendingRequest
 } from '../permission-decision'
 import { mergeManagedHook } from './install-helper'
-import { CLAUDE_HOOK_EVENTS } from '../../../shared/agents/hook-events'
+import { CLAUDE_HOOK_EVENTS, PERMISSION_REQUEST_HOOK_TIMEOUT_SECS } from '../../../shared/agents/hook-events'
 
 const sh = spawnSync('sh', ['-c', 'exit 0'])
 const shAvailable = sh.status === 0 && !sh.error && process.platform !== 'win32'
@@ -85,7 +86,7 @@ describe.skipIf(!shAvailable)('managed hook answer decoding, under /bin/sh', () 
    * Run claude's hook on `payload` with NODETERM_PERM_WAIT_SECS=1 (a 2-poll default hold).
    * `answers[k]` is written as the answer file on the k-th poll (1-based).
    */
-  function run(payload: string, answers: Record<number, string> = {}): Run {
+  function run(payload: string, answers: Record<number, string> = {}, opts: { noFractionalSleep?: boolean } = {}): Run {
     const home = join(dir, 'home')
     const bin = join(dir, 'bin')
     const answersDir = join(dir, 'answers')
@@ -114,6 +115,8 @@ describe.skipIf(!shAvailable)('managed hook answer decoding, under /bin/sh', () 
       join(bin, 'sleep'),
       [
         '#!/bin/sh',
+        // A sleep that rejects fractions (busybox without FANCY_SLEEP, some old BSDs).
+        'if [ "$1" = 0.5 ] && [ -n "$NT_NO_FRACTION" ]; then exit 1; fi',
         `c=$(cat ${JSON.stringify(count)} 2>/dev/null || echo 0)`,
         'c=$((c + 1))',
         `echo "$c" > ${JSON.stringify(count)}`,
@@ -139,7 +142,8 @@ describe.skipIf(!shAvailable)('managed hook answer decoding, under /bin/sh', () 
         HOME: home,
         NODETERM_NODE_ID: 'node-1',
         NODETERM_HOOK_ENDPOINT: endpoint,
-        NODETERM_PERM_WAIT_SECS: '1'
+        NODETERM_PERM_WAIT_SECS: '1',
+        ...(opts.noFractionalSleep ? { NT_NO_FRACTION: '1' } : {})
       }
     })
     // The "answered" POST is backgrounded; give it a moment to land before reading the log.
@@ -274,6 +278,16 @@ describe.skipIf(!shAvailable)('managed hook answer decoding, under /bin/sh', () 
     expect(run(envelope('Bash', { command: 'ls' })).sleeps).toBe(2)
   }, 60_000)
 
+  it('where fractional sleep fails, the 1 s fallback counts double: the hold stays 540 s, not 1080 s', () => {
+    const plan = run(envelope('ExitPlanMode', { plan: 'p' }), {}, { noFractionalSleep: true })
+    expect(plan.sleeps).toBe(PERM_WAIT_SECS_INTERACTIVE) // 540 one-second sleeps
+    fresh()
+    expect(run(envelope('Bash', { command: 'ls' }), {}, { noFractionalSleep: true }).sleeps).toBe(1)
+    fresh()
+    // An answer still lands on the fallback path.
+    expect(run(envelope('ExitPlanMode', { plan: 'p' }), { 3: 'allow' }, { noFractionalSleep: true }).stdout).toBe(`${ALLOW_PLAN}\n`)
+  }, 60_000)
+
   it('a SUBAGENT\'s plan/question keeps the short hold (its dialog waits for the hook)', () => {
     const r = run(envelope('ExitPlanMode', { plan: 'p' }, { agent_id: 'a-1', agent_type: 'Plan' }))
     expect(r.sleeps).toBe(2)
@@ -302,15 +316,17 @@ describe.skipIf(!shAvailable)('managed hook answer decoding, under /bin/sh', () 
   })
 })
 
-describe('hold time vs Claude\'s command-hook timeout', () => {
-  it('our installer writes NO timeout on the PermissionRequest entry, so Claude\'s 600 s default applies', () => {
+describe('hold time vs the command-hook timeout we write', () => {
+  it('our installer writes an explicit timeout on the PermissionRequest entry', () => {
     const merged = mergeManagedHook({}, "sh '/x/agent-hooks/claude.sh'", CLAUDE_HOOK_EVENTS)
     const entry = merged.hooks?.PermissionRequest?.[0]?.hooks?.[0] as Record<string, unknown>
-    expect(entry).toBeDefined()
-    expect(entry).not.toHaveProperty('timeout')
+    expect(entry.timeout).toBe(PERMISSION_REQUEST_HOOK_TIMEOUT_SECS)
   })
-  it('the interactive hold leaves at least a minute of margin under 600 s', () => {
-    expect(PERM_WAIT_SECS_INTERACTIVE).toBeLessThanOrEqual(600 - 60)
+  it('the interactive hold leaves at least a minute of margin under that timeout', () => {
+    expect(PERM_WAIT_SECS_INTERACTIVE).toBeLessThanOrEqual(PERMISSION_REQUEST_HOOK_TIMEOUT_SECS - 60)
     expect(PERM_WAIT_SECS_INTERACTIVE).toBeGreaterThan(45)
+  })
+  it('the script revision is structured-answer capable', () => {
+    expect(MANAGED_SCRIPT_REVISION).toBeGreaterThanOrEqual(MIN_STRUCTURED_ANSWER_REVISION)
   })
 })

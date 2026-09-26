@@ -94,7 +94,11 @@ import {
   PERMISSION_DECISION_PREFIX,
   PERM_WAIT_SECS_INTERACTIVE
 } from '../permission-decision'
-import { ASK_USER_QUESTION_TOOL, EXIT_PLAN_MODE_TOOL } from '../../../shared/agents/permission-answer'
+import {
+  ASK_USER_QUESTION_TOOL,
+  EXIT_PLAN_MODE_TOOL,
+  INTERACTIVE_HOLD_TOOLS
+} from '../../../shared/agents/permission-answer'
 
 /**
  * Bumped by hand whenever this script's CONTRACT with the server changes. Not a git sha and not a
@@ -115,13 +119,17 @@ import { ASK_USER_QUESTION_TOOL, EXIT_PLAN_MODE_TOOL } from '../../../shared/age
  *     and any session the PHONE spawns on that host, which runs the host's installed script — stay
  *     `legacy` until the project reconnects.
  */
-export const MANAGED_SCRIPT_REVISION = 4
+export const MANAGED_SCRIPT_REVISION = 5
 /** The first revision that reads NODETERM_NODE_TOKEN_DIR and sends the node token (PR #195). */
 export const MIN_TOKEN_AWARE_REVISION = 3
 /* rev 4 (issue #384): the token read moved to the shared resolver in `node-token-sh.ts`, which
  * falls back to the standard token dirs when the endpoint file advertises none. The floor stays 3
  * on purpose — rev 3 CAN read a token, which is the only question `MIN_TOKEN_AWARE_REVISION`
- * answers; calling it stale would tell a working session to reconnect for nothing. */
+ * answers; calling it stale would tell a working session to reconnect for nothing.
+ * rev 5: the answer file may carry a core-built JSON decision (plans/questions), a plain allow on
+ * ExitPlanMode maps to `updatedInput:{}`, and those two tools hold 540 s. The server gates
+ * structured answers on it (`MIN_STRUCTURED_ANSWER_REVISION`, permission-decision.ts) — an older
+ * script would silently ignore them while the write reported success. */
 
 /**
  * Which tool the held PermissionRequest is about, and how long to hold it (claude only; spliced
@@ -137,10 +145,14 @@ export const MIN_TOKEN_AWARE_REVISION = 3
  * identifier and only ever compared against two literals.
  *
  * `nt_wait`: ExitPlanMode / AskUserQuestion are read by a person for minutes, so they hold
- * PERM_WAIT_SECS_INTERACTIVE (< Claude's 600 s default command-hook timeout, which our installers
- * never override). EXCEPT for a subagent's request (payload names an `agent_id`): Claude awaits a
- * subagent's automated checks BEFORE painting its dialog (research §1), so a long hold there would
- * hide the prompt for minutes. A nested `"agent_id":` merely shortens the hold — the safe direction.
+ * PERM_WAIT_SECS_INTERACTIVE (< the 600 s command-hook timeout our installers
+ * write with an explicit `timeout: 600`, see CLAUDE_HOOK_EVENTS). EXCEPT for a subagent's request
+ * (payload names an `agent_id`): Claude awaits a subagent's automated checks BEFORE painting its
+ * dialog (research §1), so a long hold there would hide the prompt for minutes. Evidence that the
+ * key is the right signal (claude 2.1.283 bundle, verified by the review): the hook base input is
+ * `session_id…,permission_mode:r,agent_id:s?.agentId,agent_type:g,…` — `agentId` is undefined on
+ * the main thread, so JSON.stringify drops the key there and it appears only for a subagent. A
+ * nested `"agent_id":` inside tool_input merely shortens the hold — the safe direction.
  */
 const HELD_TOOL_SH: readonly string[] = [
   '      nt_tool=""',
@@ -158,7 +170,7 @@ const HELD_TOOL_SH: readonly string[] = [
   '      case "$nt_tool" in \'\'|*[!A-Za-z0-9_.:-]*) nt_tool="" ;; esac',
   '      nt_wait="$NODETERM_PERM_WAIT_SECS"',
   '      case "$nt_tool" in',
-  `        ${EXIT_PLAN_MODE_TOOL}|${ASK_USER_QUESTION_TOOL})`,
+  `        ${INTERACTIVE_HOLD_TOOLS.join('|')})`,
   '          case "$payload" in',
   '            *\'"agent_id":\'*) ;;',
   `            *) nt_wait=${PERM_WAIT_SECS_INTERACTIVE} ;;`,
@@ -201,10 +213,12 @@ const ANSWER_DECODE_SH: readonly string[] = [
   `        '${PERMISSION_DECISION_PREFIX}"allow"'*) nt_verb=allow; nt_out="$nt_decision" ;;`,
   `        '${PERMISSION_DECISION_PREFIX}"deny"'*) nt_verb=deny; nt_out="$nt_decision" ;;`,
   '      esac',
-  '      # Shape-check a core-built JSON answer before it can reach Claude\'s stdout.',
+  '      # Shape-check a core-built JSON answer before it can reach Claude\'s stdout. The size is the',
+  '      # FILE\'s byte count (wc -c), not ${#…}: that counts characters under bash, bytes under dash.',
   '      if [ -n "$nt_out" ] && [ "$nt_out" = "$nt_decision" ]; then',
   '        case "$nt_out" in *\'}\') ;; *) nt_out="" ;; esac',
-  `        if [ "\${#nt_out}" -gt ${PERMISSION_DECISION_MAX_BYTES} ]; then nt_out=""; fi`,
+  '        # Fail CLOSED: an empty/odd size (wc failed) makes the test error, which also clears nt_out.',
+  `        if ! [ "$nt_size" -le ${PERMISSION_DECISION_MAX_BYTES} ] 2>/dev/null; then nt_out=""; fi`,
   "        if [ -n \"$nt_out\" ] && [ \"$(printf '%s' \"$nt_out\" | tr -d '\\000-\\037')\" != \"$nt_out\" ]; then nt_out=\"\"; fi",
   '        [ -n "$nt_out" ] || nt_verb=""',
   '      fi'
@@ -465,7 +479,10 @@ export function buildManagedScript(
     '  nt_i=0',
     '  while [ "$nt_i" -lt "$nt_max" ]; do',
     '    if [ -f "$nt_answer" ]; then',
-    '      nt_decision=$(cat "$nt_answer" 2>/dev/null)',
+    // Take the file's BYTE size, then read at most one byte past the cap: a hostile multi-megabyte
+    // file is never slurped into the shell, and the size check below rejects anything over it.
+    '      nt_size=$(wc -c < "$nt_answer" 2>/dev/null)',
+    `      nt_decision=$(head -c ${PERMISSION_DECISION_MAX_BYTES + 1} "$nt_answer" 2>/dev/null)`,
     ...ANSWER_DECODE_SH,
     '      if [ "$nt_verb" = hold ]; then',
     '        # A plain allow on a question: consume it and KEEP HOLDING (see ANSWER_DECODE_SH).',
@@ -517,8 +534,9 @@ export function buildManagedScript(
     '        exit 0',
     '      fi',
     '    fi',
-    '    sleep 0.5 2>/dev/null || sleep 1',
-    '    nt_i=$((nt_i + 1))',
+    // nt_max counts HALF-seconds. Where fractional sleep is unsupported the fallback sleeps a full
+    // second, so it must count 2 — else the 540 s hold would run ~1080 s, past the hook timeout.
+    '    if sleep 0.5 2>/dev/null; then nt_i=$((nt_i + 1)); else sleep 1; nt_i=$((nt_i + 2)); fi',
     '  done',
     '  # Timed out: clean up the request + payload files and print nothing → Claude shows its normal prompt.',
     '  rm -f "$nt_pending_file" "$nt_payload_file" 2>/dev/null || :',

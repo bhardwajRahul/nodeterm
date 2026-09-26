@@ -2802,7 +2802,7 @@ app.whenReady().then(async () => {
             write: (content) => sshProjectManager!.writePendingAnswer(sshProjectId, pendingId, content)
           }
         : localHeldPermissionIo(pendingId, homedir())
-    const res = await answerHeldPermission({ decision: payload.decision, answer: payload.answer }, io)
+    const res = await answerHeldPermission(pendingId, { decision: payload.decision, answer: payload.answer }, io)
     // Optimistic flip: on a successful write, emit the same synthetic "answered" transition the
     // held hook's second POST will produce, so the NEEDS YOU badge clears instantly instead of
     // waiting for that POST to round-trip. The later hook POST is an idempotent duplicate (a

@@ -1132,6 +1132,18 @@ describe('recordAgentEvent enrichment (returned broadcast event)', () => {
     expect(out.held).toEqual({ pendingId: 'e9-1-1', toolName: 'AskUserQuestion' })
   })
 
+  it('a held question with NO PreToolUse stash is classified as an approval and keeps pendingId', () => {
+    // Why the header needs its own AskUserQuestion gate (renderer/lib/approveGate.ts).
+    const perm = normalizeClaude({
+      nodeId: 'e11',
+      agentId: 'claude',
+      payload: { hook_event_name: 'PermissionRequest', session_id: 's', tool_name: 'AskUserQuestion', tool_input: {}, nodeterm_pending_id: 'e11-1-1' }
+    })!
+    const out = recordAgentEvent(perm)
+    expect(out.pendingId).toBe('e11-1-1')
+    expect(out.held).toEqual({ pendingId: 'e11-1-1', toolName: 'AskUserQuestion' })
+  })
+
   it('a held PLAN is an approval: keeps pendingId (header Approve works) and names ExitPlanMode', () => {
     const perm = normalizeClaude({
       nodeId: 'e10',

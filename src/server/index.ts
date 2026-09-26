@@ -515,6 +515,7 @@ export async function startServer(
     if (workspaceStore.sshProjectIdForNode(nodeId)) return false
     // Same shared body as the desktop (core/agents/permission-decision.ts), local fs only.
     const res = await answerHeldPermission(
+      pendingId,
       { decision: payload.decision, answer: payload.answer },
       localHeldPermissionIo(pendingId, os.homedir())
     )

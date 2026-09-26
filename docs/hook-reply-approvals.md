@@ -111,19 +111,36 @@ the TUI. Core also refuses to write it (`answerPermission` → `false`) so no su
 for an answer that did nothing, and the header hides ✓ Approve for that ticket.
 
 **Hold time.** For these two tools the hook holds `PERM_WAIT_SECS_INTERACTIVE` = 540 s instead of 45 s
-— people read plans for minutes. Our installers write **no `timeout`** on the PermissionRequest entry,
-so Claude's command-hook default of 600 s applies (pinned in `managed-script.answer.test.ts`), leaving a
-60 s margin. Because the main-thread dialog is painted concurrently, a long hold blocks nothing. A
-**subagent's** request keeps the short hold: its dialog awaits the hook, so 540 s there would hide the
-prompt (detected by an `"agent_id":` key in the payload — a false positive only shortens the hold).
+— people read plans for minutes. The installer writes an explicit `timeout: 600` on OUR PermissionRequest
+handler (`PERMISSION_REQUEST_HOOK_TIMEOUT_SECS`, `CLAUDE_HOOK_EVENTS`; local, managed-account and SSH
+installs alike, and an existing install is rewritten with it at the next install), so the bound the hold
+is sized against is not a CLI default that could change; 60 s of margin, pinned by tests. The poll counts
+half-seconds, and where `sleep 0.5` is unsupported the `sleep 1` fallback counts two, so the hold never
+doubles past the timeout. Because the main-thread dialog is painted concurrently, a long hold blocks
+nothing. A **subagent's** request keeps the short hold: its dialog awaits the hook, so 540 s there would
+hide the prompt. The signal is an `"agent_id":` key in the payload — verified in the claude 2.1.283 bundle,
+whose hook base input is `session_id…,permission_mode:r,agent_id:s?.agentId,agent_type:g,…`, so the key is
+undefined (and dropped by JSON) on the main thread; a nested false positive only shortens the hold.
 The tool name is read from the FIRST `"tool_name":` in the payload and trusted only when no
 `"tool_input"` precedes it, so a nested key inside some tool's input can never make an ordinary tool
-look like a plan (an empty/unsafe name degrades to today's default behavior).
+look like a plan (an empty/unsafe name degrades to today's default behavior). The answer file's size is
+its BYTE count (`wc -c`) and at most cap+1 bytes are read (`head -c`).
 
-**Old script on an SSH host.** The script on a host is rewritten only at connect. An old script reads a
-JSON answer as neither `allow` nor `deny`, removes the files and prints nothing, so the TUI dialog still
-answers — a safe degrade (verified by running the new sh tests against the previous script). Its plan
-`allow` stays the old silent no-op until the project reconnects.
+**Old script on an SSH host — gated by revision.** The script on a host is rewritten only at connect,
+so a long-connected project can hold a request with an older script. That script reads a JSON answer as
+neither `allow` nor `deny`, deletes it and prints nothing (the TUI still answers — verified by running the
+new sh tests against the previous script), while the WRITE succeeded; without a gate core would report
+success and the optimistic "answered" event would flip NEEDS YOU to working over an agent still waiting
+in its TUI. So the script's revision gates it: `MANAGED_SCRIPT_REVISION` is 5, every hook POST already
+carries it (`clientRevision`), and the hook server (`labelHeldForRevision`) keeps an event's `held` ticket
+— and records the ticket as structured-capable — only for revision >= `MIN_STRUCTURED_ANSWER_REVISION` (5).
+`answerHeldPermission` refuses (`false`, nothing written, no synthetic answered event) a structured answer
+for a ticket not recorded as capable, and a plain `allow` on a plan held by such a script (it would print a
+bare allow Claude drops). **UI consequence:** on an old-script host no plan/question controls are offered
+at all (the renderer never receives `held`), and the header ✓ Approve on a plan answers `false` instead of
+pretending; Deny and ordinary approvals work exactly as before. Reconnecting the project installs the
+current script. The capability record is process-local and bounded, so a ticket from before an app
+restart is treated as not capable (the renderer's `held` is gone then too).
 
 **Renderer.** A held request's `{pendingId, toolName}` rides the normalized event as `held` and the
 agent-status store keeps it while the node is `blocked` or `waiting` — separate from `pendingId`, which

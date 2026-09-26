@@ -9,7 +9,7 @@ import { legacyEndpointMigration } from './legacy-hook-endpoint'
 // simply runs without status). Takes an INJECTED runner so the flow is unit-testable without real
 // ssh/electron.
 import { childArgs, hookForwardArgs, hookForwardCancelArgs, remoteEndpointFileContents } from '../../core/remote-ssh/control-master'
-import { CLAUDE_HOOK_EVENTS, GEMINI_HOOK_EVENTS } from '@shared/agents/hook-events'
+import { CLAUDE_HOOK_EVENTS, GEMINI_HOOK_EVENTS, type ManagedHookEvent } from '@shared/agents/hook-events'
 import { GROK_EVENTS } from '../../core/agents/hooks/grok'
 import { GROK_HOOK_FILE, isSafeRemoteGrokHome } from '../../core/agents/grok-paths'
 import { isSafeNodeId, isSafeRemoteHome } from '../../core/remote-safety'
@@ -103,7 +103,7 @@ export interface RemoteRunner {
 // here and had drifted: claude was missing StopFailure/PermissionRequest (an errored remote turn
 // stuck on "working"), and gemini was subscribed to CLAUDE's event names, which it never fires —
 // so remote gemini nodes reported nothing at all.
-const AGENT_TARGETS: { agentId: string; config: string; events: readonly string[] }[] = [
+const AGENT_TARGETS: { agentId: string; config: string; events: readonly ManagedHookEvent[] }[] = [
   { agentId: 'claude', config: '.claude/settings.json', events: CLAUDE_HOOK_EVENTS },
   { agentId: 'gemini', config: '.gemini/settings.json', events: GEMINI_HOOK_EVENTS }
 ]
@@ -440,7 +440,7 @@ export class RemoteHooks {
     controlPath: string,
     home: string,
     remoteDir: string,
-    target: { agentId: string; config: string; events: readonly string[] }
+    target: { agentId: string; config: string; events: readonly ManagedHookEvent[] }
   ): Promise<void> {
     try {
       const script = `${remoteDir}/agent-hooks/${target.agentId}.sh`

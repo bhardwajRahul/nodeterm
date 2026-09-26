@@ -1934,7 +1934,7 @@ export class SshProjectManager {
     const { code, stdout } = await this.r
       .run(childArgs(c.conn, c.controlPath, cmd))
       .catch(() => ({ code: 1, stdout: '' }))
-    if (code !== 0 || typeof stdout !== 'string' || stdout.length > PENDING_REQUEST_MAX_BYTES) return null
+    if (code !== 0 || typeof stdout !== 'string' || Buffer.byteLength(stdout, 'utf8') > PENDING_REQUEST_MAX_BYTES) return null
     return stdout
   }
 

@@ -1,6 +1,10 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 import {
+  _resetStructuredTicketsForTest,
   answerHeldPermission,
+  isStructuredTicket,
+  labelHeldForRevision,
+  MIN_STRUCTURED_ANSWER_REVISION,
   buildPermissionDecision,
   isBoundedAnswerContent,
   parsePermissionAnswer,
@@ -284,6 +288,15 @@ describe('isBoundedAnswerContent — the same bound the hook script applies', ()
 })
 
 describe('answerHeldPermission — the one orchestration both shells call', () => {
+  const T = 'node-1-1720-42'
+  beforeEach(() => {
+    _resetStructuredTicketsForTest()
+    // A capable (rev >= 5) script posted this ticket — the hook server's labeler records it.
+    labelHeldForRevision(
+      { nodeId: 'n', agentId: 'claude', kind: 'state', state: 'blocked', held: { pendingId: T, toolName: 'ExitPlanMode' } },
+      MIN_STRUCTURED_ANSWER_REVISION
+    )
+  })
   function io(pending: string | null) {
     const writes: string[] = []
     return {
@@ -297,12 +310,12 @@ describe('answerHeldPermission — the one orchestration both shells call', () =
   }
   it('legacy payload (decision only) keeps working', async () => {
     const x = io(envelope('Bash', { command: 'ls' }))
-    expect(await answerHeldPermission({ decision: 'allow' }, x)).toEqual({ ok: true, decision: 'allow' })
+    expect(await answerHeldPermission(T, { decision: 'allow' }, x)).toEqual({ ok: true, decision: 'allow' })
     expect(x.writes).toEqual(['allow'])
   })
   it('a structured answer wins over decision and is built from the pending file', async () => {
     const x = io(envelope('ExitPlanMode', { plan: 'p' }))
-    expect(await answerHeldPermission({ decision: 'deny', answer: { kind: 'plan', mode: 'manual' } }, x)).toEqual({
+    expect(await answerHeldPermission(T, { decision: 'deny', answer: { kind: 'plan', mode: 'manual' } }, x)).toEqual({
       ok: true,
       decision: 'allow'
     })
@@ -310,22 +323,23 @@ describe('answerHeldPermission — the one orchestration both shells call', () =
   })
   it('a structured answer with no pending request (hold expired / already answered) writes NOTHING', async () => {
     const x = io(null)
-    expect(await answerHeldPermission({ answer: { kind: 'plan', mode: 'restore' } }, x)).toEqual({ ok: false })
+    expect(await answerHeldPermission(T, { answer: { kind: 'plan', mode: 'restore' } }, x)).toEqual({ ok: false })
     expect(x.writes).toEqual([])
   })
   it('an invalid answer or missing decision writes nothing', async () => {
     const x = io(envelope('AskUserQuestion', { questions: REAL_QUESTIONS }))
-    expect(await answerHeldPermission({ decision: 'allow' }, x)).toEqual({ ok: false })
-    expect(await answerHeldPermission({ answer: { kind: 'nope' } }, x)).toEqual({ ok: false })
-    expect(await answerHeldPermission({}, x)).toEqual({ ok: false })
+    expect(await answerHeldPermission(T, { decision: 'allow' }, x)).toEqual({ ok: false })
+    expect(await answerHeldPermission(T, { answer: { kind: 'nope' } }, x)).toEqual({ ok: false })
+    expect(await answerHeldPermission(T, {}, x)).toEqual({ ok: false })
     expect(x.writes).toEqual([])
   })
   it('a failed write reports false; a throwing reader fails soft', async () => {
     expect(
-      await answerHeldPermission({ decision: 'deny' }, { readPending: async () => null, write: async () => false })
+      await answerHeldPermission(T, { decision: 'deny' }, { readPending: async () => null, write: async () => false })
     ).toEqual({ ok: false })
     expect(
       await answerHeldPermission(
+        T,
         { decision: 'deny' },
         {
           readPending: async () => {
@@ -335,5 +349,66 @@ describe('answerHeldPermission — the one orchestration both shells call', () =
         }
       )
     ).toEqual({ ok: true, decision: 'deny' })
+  })
+
+  describe('a ticket held by an OLDER script (an SSH host keeps its script until reconnect)', () => {
+    const OLD = 'node-2-1720-43'
+    it('refuses a structured answer before touching the host — no false "answered"', async () => {
+      const x = io(envelope('ExitPlanMode', { plan: 'p' }))
+      expect(await answerHeldPermission(OLD, { answer: { kind: 'plan', mode: 'restore' } }, x)).toEqual({ ok: false })
+      const q = io(envelope('AskUserQuestion', { questions: REAL_QUESTIONS }))
+      expect(
+        await answerHeldPermission(OLD, { answer: { kind: 'question', answers: { [QUESTION_TEXT]: 'Kim kimi okuyabilir (context)' } } }, q)
+      ).toEqual({ ok: false })
+      expect(x.writes).toEqual([])
+      expect(q.writes).toEqual([])
+    })
+    it('refuses a plain allow on a PLAN (the old script would print a bare allow Claude drops)', async () => {
+      const x = io(envelope('ExitPlanMode', { plan: 'p' }))
+      expect(await answerHeldPermission(OLD, { decision: 'allow' }, x)).toEqual({ ok: false })
+      expect(x.writes).toEqual([])
+    })
+    it('keeps the legacy words working everywhere else: deny, an ordinary allow, an unreadable request', async () => {
+      const plan = io(envelope('ExitPlanMode', { plan: 'p' }))
+      expect(await answerHeldPermission(OLD, { decision: 'deny' }, plan)).toEqual({ ok: true, decision: 'deny' })
+      const bash = io(envelope('Bash', { command: 'ls' }))
+      expect(await answerHeldPermission(OLD, { decision: 'allow' }, bash)).toEqual({ ok: true, decision: 'allow' })
+      const gone = io(null)
+      expect(await answerHeldPermission(OLD, { decision: 'allow' }, gone)).toEqual({ ok: true, decision: 'allow' })
+    })
+  })
+})
+
+describe('labelHeldForRevision (the hook server stamps each held ticket)', () => {
+  beforeEach(() => _resetStructuredTicketsForTest())
+  const blocked = (pendingId: string) => ({
+    nodeId: 'n',
+    agentId: 'claude',
+    kind: 'state' as const,
+    state: 'blocked' as const,
+    pendingId,
+    held: { pendingId, toolName: 'AskUserQuestion' }
+  })
+  it('keeps `held` and records the ticket for a capable script', () => {
+    const out = labelHeldForRevision(blocked('a-1-1'), MIN_STRUCTURED_ANSWER_REVISION)
+    expect(out.held).toEqual({ pendingId: 'a-1-1', toolName: 'AskUserQuestion' })
+    expect(isStructuredTicket('a-1-1')).toBe(true)
+  })
+  it('drops `held` (and records nothing) for an older or unstamped script; pendingId is untouched', () => {
+    for (const rev of [undefined, 3, 4]) {
+      const out = labelHeldForRevision(blocked('b-1-1'), rev)
+      expect('held' in out, String(rev)).toBe(false)
+      expect(out.pendingId).toBe('b-1-1')
+    }
+    expect(isStructuredTicket('b-1-1')).toBe(false)
+  })
+  it('passes an event with no held request through as the same reference', () => {
+    const ev = { nodeId: 'n', agentId: 'claude', kind: 'state' as const, state: 'working' as const }
+    expect(labelHeldForRevision(ev, 5)).toBe(ev)
+  })
+  it('stays bounded', () => {
+    for (let i = 0; i < 1100; i++) labelHeldForRevision(blocked(`t-${i}`), 5)
+    expect(isStructuredTicket('t-0')).toBe(false)
+    expect(isStructuredTicket('t-1099')).toBe(true)
   })
 })

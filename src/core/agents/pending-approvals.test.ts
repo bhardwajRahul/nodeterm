@@ -12,7 +12,13 @@ import {
   readPendingRequestLocal,
   localHeldPermissionIo
 } from './pending-approvals'
-import { answerHeldPermission, PENDING_REQUEST_MAX_BYTES, PERMISSION_DECISION_PREFIX } from './permission-decision'
+import {
+  answerHeldPermission,
+  labelHeldForRevision,
+  MIN_STRUCTURED_ANSWER_REVISION,
+  PENDING_REQUEST_MAX_BYTES,
+  PERMISSION_DECISION_PREFIX
+} from './permission-decision'
 
 let home: string
 
@@ -99,7 +105,11 @@ describe('readPendingRequestLocal + localHeldPermissionIo', () => {
       path.join(pendingDir(home), 'n.json'),
       JSON.stringify({ hook_event_name: 'PermissionRequest', tool_name: 'ExitPlanMode', tool_input: { plan: 'p' } })
     )
-    const res = await answerHeldPermission({ answer: { kind: 'plan', mode: 'restore' } }, localHeldPermissionIo('n', home))
+    labelHeldForRevision(
+      { nodeId: 'x', agentId: 'claude', kind: 'state', state: 'blocked', held: { pendingId: 'n', toolName: 'ExitPlanMode' } },
+      MIN_STRUCTURED_ANSWER_REVISION
+    )
+    const res = await answerHeldPermission('n', { answer: { kind: 'plan', mode: 'restore' } }, localHeldPermissionIo('n', home))
     expect(res).toEqual({ ok: true, decision: 'allow' })
     expect(fs.readFileSync(path.join(pendingDir(home), 'n.answer'), 'utf8')).toBe(
       `${PERMISSION_DECISION_PREFIX}"allow","updatedInput":{}}}}`

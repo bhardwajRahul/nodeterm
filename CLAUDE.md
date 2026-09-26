@@ -2188,11 +2188,14 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   (3) answer content never rides an argv (the answered POST carries the decoded verb; SSH writes go on
   stdin); (4) a plain `allow` maps to `updatedInput:{}` for a plan and is swallowed (hook keeps
   holding) for a question — core refuses to write it and the header hides ✓ Approve for that ticket;
-  (5) these two tools hold 540 s (`PERM_WAIT_SECS_INTERACTIVE`) under the 600 s default command-hook
-  timeout our installers never override — except a subagent's request, whose dialog awaits the hook.
-  An old script on an SSH host ignores JSON answers (prints nothing → TUI answers). The renderer gets
-  `held: {pendingId, toolName}` on the event/store (kept while blocked OR waiting), separate from the
-  approve/deny `pendingId` the mirror strips from a question. Desktop local + SSH, Server Edition local;
+  (5) these two tools hold 540 s (`PERM_WAIT_SECS_INTERACTIVE`) under the explicit `timeout: 600` we
+  write on the PermissionRequest handler — except a subagent's request (payload carries `agent_id`),
+  whose dialog awaits the hook; (6) structured answers are gated on the SCRIPT REVISION: an old script on
+  an SSH host (rewritten only at connect) silently ignores JSON while the write succeeds, so the hook
+  server keeps `held` only for `clientRevision >= MIN_STRUCTURED_ANSWER_REVISION` and core refuses a
+  structured answer (or a plain plan allow) for a ticket it did not record as capable — never a false
+  "answered". The renderer gets `held: {pendingId, toolName}` on the event/store (kept while blocked OR
+  waiting), separate from the approve/deny `pendingId` the mirror strips from a question. Desktop local + SSH, Server Edition local;
   relay unchanged; phone keeps `allow`/`deny` (its plan approve now works via the script mapping).
 - **Per-node hook identity** (`src/core/agents/node-auth-*.ts`, `node-token-*.ts`,
   `node-identity-policy.ts` — full write-up in **`docs/node-identity.md`**) — the shared bearer proves

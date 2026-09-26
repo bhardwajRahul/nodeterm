@@ -555,8 +555,8 @@ const api: NodeTerminalApi = {
     clearGatewayCredential: () => ipcRenderer.invoke(IPC.agentGatewayCredentialClear)
   },
   chat: {
-    readTranscript: (sessionId, cwd, accountId, nodeId, agentId) =>
-      ipcRenderer.invoke(IPC.chatReadTranscript, sessionId, cwd, accountId, nodeId, agentId),
+    readTranscript: (sessionId, cwd, accountId, nodeId, agentId, page) =>
+      ipcRenderer.invoke(IPC.chatReadTranscript, sessionId, cwd, accountId, nodeId, agentId, page),
     transcriptExists: (sessionId, accountId, nodeId) =>
       ipcRenderer.invoke(IPC.transcriptExists, sessionId, accountId, nodeId)
   },

@@ -4,7 +4,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import type { TranscriptLine, ChatMessage, ChatPart } from '../shared/types'
+import type { TranscriptLine, ChatMessage, ChatPart, ChatCarriedToolResult } from '../shared/types'
 import { transcriptRootFor } from './claude-accounts-core'
 import { linkedClaudeConfigDirFor } from './claude-config-dir'
 import { platform } from './platform'
@@ -128,10 +128,25 @@ export async function readTranscriptLines(filePath: string): Promise<TranscriptL
 // text + tool_use blocks become one message's ordered parts; a later user-line tool_result is
 // correlated back onto its tool part by tool_use_id. User lines that carry only tool_results
 // (no prose) are NOT rendered as bubbles — they're tool output, attached to the tool instead.
-export function parseChatMessages(rawLines: string[]): ChatMessage[] {
+//
+// `paged` switches on the three things only a paged read needs (and the legacy result must NOT
+// grow, byte for byte): a `key` per message (its line's absolute byte offset), the `tool_use` id on
+// each tool part, and the list of results whose tool was not among these lines.
+interface ChatRecordsOut {
+  messages: ChatMessage[]
+  unmatched: Map<string, string>
+}
+function parseChatRecords(
+  records: Iterable<{ raw: string; offset: number }>,
+  paged: boolean
+): ChatRecordsOut {
   const messages: ChatMessage[] = []
+  const unmatched = new Map<string, string>()
   const toolById = new Map<string, Extract<ChatPart, { kind: 'tool' }>>()
-  for (const raw of rawLines) {
+  const push = (m: ChatMessage, offset: number): void => {
+    messages.push(paged ? { ...m, key: offset } : m)
+  }
+  for (const { raw, offset } of records) {
     if (!raw.trim()) continue
     let o: { type?: string; message?: { content?: unknown } }
     try {
@@ -156,11 +171,12 @@ export function parseChatMessages(rawLines: string[]): ChatMessage[] {
             name: c.name ?? 'tool',
             arg: toolArg(c.input)
           }
+          if (paged && typeof c.id === 'string' && c.id) part.id = c.id
           parts.push(part)
           if (c.id) toolById.set(c.id, part)
         }
       }
-      if (parts.length) messages.push({ role: 'assistant', parts })
+      if (parts.length) push({ role: 'assistant', parts }, offset)
     } else if (o.type === 'user' && Array.isArray(content)) {
       const parts: ChatPart[] = []
       for (const c of content as Array<{
@@ -172,18 +188,117 @@ export function parseChatMessages(rawLines: string[]): ChatMessage[] {
         if (c.type === 'text' && c.text) parts.push({ kind: 'text', text: c.text })
         else if (c.type === 'tool_result') {
           const tool = c.tool_use_id ? toolById.get(c.tool_use_id) : undefined
+          const s = summarizeResult(c.content)
           if (tool) {
-            const s = summarizeResult(c.content)
             if (s) tool.result = s
+          } else if (paged && s && typeof c.tool_use_id === 'string' && c.tool_use_id) {
+            // Its tool_use is in an OLDER window (claude writes the call before its result, so it
+            // can never be in a newer one). Carried so the renderer can attach it later.
+            unmatched.set(c.tool_use_id, s)
           }
         }
       }
-      if (parts.length) messages.push({ role: 'user', parts })
+      if (parts.length) push({ role: 'user', parts }, offset)
     } else if (o.type === 'user' && typeof content === 'string' && content.trim()) {
-      messages.push({ role: 'user', parts: [{ kind: 'text', text: content }] })
+      push({ role: 'user', parts: [{ kind: 'text', text: content }] }, offset)
     }
   }
-  return messages
+  return { messages, unmatched }
+}
+
+export function parseChatMessages(rawLines: string[]): ChatMessage[] {
+  return parseChatRecords(
+    rawLines.map((raw) => ({ raw, offset: 0 })),
+    false
+  ).messages
+}
+
+/** A paged chat read's answer, minus `found` (the caller knows whether anything resolved). */
+export interface ChatWindowParse {
+  messages: ChatMessage[]
+  olderCursor: number | null
+  unmatchedResults: ChatCarriedToolResult[]
+}
+
+/**
+ * Parse one byte window of a transcript. PURE — the local reader and the remote (SSH) leg hand it
+ * the same kind of buffer, so both sides page identically.
+ *
+ * `buf` holds the file's bytes from absolute offset `bufStart` to the window end. When `bufStart`
+ * is not 0, everything up to and including the first `\n` is dropped as a partial line, and
+ * `olderCursor` is the offset right after that newline — where the first COMPLETE line starts,
+ * i.e. the `before` of the next older page. Callers should start `buf` ONE BYTE before the window
+ * they want (`readChatWindow` / `transcriptPageCommand` do): that lookbehind byte is the only way
+ * to recognize a line that begins exactly on the window edge; without it such a line would be
+ * dropped as partial.
+ *
+ * Working in bytes, not a decoded string, is what keeps the offsets exact: a line's key is the
+ * absolute byte offset of its first byte, which a prepend or an append can never change, and a
+ * multi-byte character cut by the window edge only ever lands in the dropped partial line (each
+ * kept line is decoded on its own, from newline to newline).
+ *
+ * A line longer than the whole window leaves no complete line in it. `olderCursor` is then
+ * `bufStart` — strictly older than the window end — so paging keeps moving and that one oversized
+ * record is skipped. Answering the window end instead would ask for the identical window forever.
+ */
+export function parseChatWindow(buf: Buffer, bufStart: number): ChatWindowParse {
+  const end = bufStart + buf.length
+  let from = 0
+  let olderCursor: number | null = null
+  if (bufStart > 0) {
+    const nl = buf.indexOf(0x0a)
+    if (nl < 0 || bufStart + nl + 1 >= end) {
+      return { messages: [], olderCursor: bufStart, unmatchedResults: [] }
+    }
+    from = nl + 1
+    olderCursor = bufStart + from
+  }
+  const records: Array<{ raw: string; offset: number }> = []
+  while (from < buf.length) {
+    const nl = buf.indexOf(0x0a, from)
+    const to = nl < 0 ? buf.length : nl
+    if (to > from) records.push({ raw: buf.toString('utf8', from, to), offset: bufStart + from })
+    from = to + 1
+  }
+  const { messages, unmatched } = parseChatRecords(records, true)
+  return {
+    messages,
+    olderCursor,
+    unmatchedResults: [...unmatched].map(([id, result]) => ({ id, result }))
+  }
+}
+
+/**
+ * Read one window of a transcript for `parseChatWindow`: at most `maxBytes` ending at `before`
+ * (`null`, or past EOF = the file size), plus one byte of lookbehind when the window does not start
+ * at 0. `start` is the absolute offset of `data[0]` (the lookbehind byte, when there is one); `end`
+ * the window end actually used. Undefined when the file cannot be read.
+ */
+export async function readChatWindow(
+  filePath: string,
+  page: { before: number | null; maxBytes: number }
+): Promise<{ data: Buffer; start: number; end: number } | undefined> {
+  try {
+    const fd = await fs.promises.open(filePath, 'r')
+    try {
+      const { size } = await fd.stat()
+      const end = page.before === null || page.before > size ? size : page.before
+      const windowStart = Math.max(0, end - page.maxBytes)
+      const start = windowStart > 0 ? windowStart - 1 : 0
+      const length = end - start
+      if (length <= 0) return { data: Buffer.alloc(0), start, end }
+      const { buffer, bytesRead } = await fd.read({
+        position: start,
+        length,
+        buffer: Buffer.alloc(length)
+      })
+      return { data: buffer.subarray(0, bytesRead), start, end: start + bytesRead }
+    } finally {
+      await fd.close()
+    }
+  } catch {
+    return undefined
+  }
 }
 
 export async function readChatMessages(filePath: string): Promise<ChatMessage[]> {

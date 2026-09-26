@@ -3154,6 +3154,51 @@ body,
 .term-chat__retry:hover {
   background: rgba(var(--tint-rgb), 0.12);
 }
+/* Progressive loading (lane B, chat paging). A LOCAL spinner on purpose: the shared one lives on
+   another branch and is unified at integration. */
+.term-chat__loading {
+  margin: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: rgba(var(--tint-rgb), 0.4);
+}
+.term-chat__older {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 22px;
+  font-size: 11px;
+  color: rgba(var(--tint-rgb), 0.35);
+}
+.term-chat__older .term-chat__retry {
+  margin-top: 0;
+}
+.term-chat__older--start {
+  color: rgba(var(--tint-rgb), 0.22);
+}
+.term-chat__spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(var(--tint-rgb), 0.15);
+  border-top-color: rgba(var(--tint-rgb), 0.55);
+  animation: term-chat-spin 0.8s linear infinite;
+  animation-play-state: var(--nt-anim-state);
+}
+@keyframes term-chat-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .term-chat__spinner {
+    animation-duration: 2.4s;
+  }
+}
 .term-chat__msg {
   max-width: 92%;
   padding: 8px 10px;

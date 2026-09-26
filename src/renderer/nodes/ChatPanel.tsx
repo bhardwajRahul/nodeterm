@@ -543,7 +543,12 @@ export function ChatPanel({
   // the turn's last message. `now` is ONE clock for every row's relative time, ticked once a minute
   // (a per-row timer would be a timer per turn for a label that changes once a minute).
   const turnEnds = useMemo(() => assistantTurnEnds(messages), [messages])
-  const latestTurnEnd = useMemo(() => Math.max(-1, ...turnEnds.keys()), [turnEnds])
+  // The last key IS the latest turn end: `assistantTurnEnds` inserts in thread order.
+  const latestTurnEnd = useMemo(() => {
+    let last = -1
+    for (const k of turnEnds.keys()) last = k
+    return last
+  }, [turnEnds])
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 60_000)
@@ -712,6 +717,7 @@ export function ChatPanel({
           })}
           disabled={readonly || refusal !== null}
           onWriteRefused={onWriteRefused}
+          sendUnconfirmed={optimistic}
           pathsForFiles={pathsForFiles}
           onShowTerminal={onShowTerminal}
         />

@@ -38,6 +38,13 @@ export interface ChatComposerProps {
   disabled: boolean
   /** A picker command the pane refused outright (`sendText` → false): the session is not writable. */
   onWriteRefused: () => void
+  /**
+   * A message was just sent and no hook event has confirmed the turn yet (ChatPanel's `optimistic`,
+   * #953). The gate still reads `done` in that window, but the agent is about to be working — a
+   * `/model` typed now would land in (or queue behind) the turn being started. The picker labels
+   * stand down until the real state speaks.
+   */
+  sendUnconfirmed?: boolean
   /** See ChatPanelProps. */
   pathsForFiles?: (files: File[]) => Promise<string[]>
   /** See ChatPanelProps. */
@@ -61,6 +68,7 @@ export function ChatComposer({
   placeholder,
   disabled,
   onWriteRefused,
+  sendUnconfirmed = false,
   pathsForFiles,
   onShowTerminal
 }: ChatComposerProps) {
@@ -83,6 +91,8 @@ export function ChatComposer({
   // plus Enter INTO the picker the first one just opened, and Enter confirms its highlighted
   // option. The ref is the guard (read synchronously); the state only renders it.
   const pickerBusyRef = useRef(false)
+  const sendUnconfirmedRef = useRef(sendUnconfirmed)
+  sendUnconfirmedRef.current = sendUnconfirmed
   const [pickerBusy, setPickerBusy] = useState(false)
   const labels = composerLabels({ agentId, model: usage?.model, effort: usage?.effort, width: composerWidth })
 
@@ -199,7 +209,7 @@ export function ChatComposer({
   // answer it; into a shell it would run) — then flip to the terminal so the picker is in view.
   const openPicker = useCallback(
     async (picker: ComposerPicker) => {
-      if (pickerBusyRef.current) return
+      if (pickerBusyRef.current || sendUnconfirmedRef.current) return
       const command = composerPickerCommand(agentId, picker)
       if (!command || !onShowTerminal) return
       if (chatSendRefusal(agentId, useAgentStatus.getState().byId[nodeId] ?? {}) !== null) return
@@ -240,7 +250,7 @@ export function ChatComposer({
     onSend()
   }
 
-  const labelDisabled = disabled || pickerBusy
+  const labelDisabled = disabled || pickerBusy || sendUnconfirmed
 
   return (
     <div className="term-chat__compose">

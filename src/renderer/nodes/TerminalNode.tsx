@@ -294,6 +294,16 @@ export function sshConnectionScope(conn: SshConnection): string {
 }
 
 /**
+ * Which ControlMaster a node's file uploads go over: its OWN connection's scope (for an attached
+ * node, the host attachment — not the local project), else the active project. ONE definition for
+ * the terminal drop, the card modal's live viewer and the ⌘M composer's attach, so the three can
+ * never upload one file to two different machines.
+ */
+export function nodeUploadScope(ssh: SshConnection | undefined): string {
+  return ssh ? sshConnectionScope(ssh) : useProjects.getState().activeProjectId
+}
+
+/**
  * The project whose per-project settings apply to a node in THIS canvas — for the launch-command
  * layer (`agentLaunchOverride`) on relaunch, restart and wake.
  *
@@ -5113,13 +5123,8 @@ export function TerminalNode({
     const rt = e.relatedTarget as Node | null
     if (!rt || !(e.currentTarget as HTMLElement).contains(rt)) setDropping(false)
   }
-  // Uploads go over the master this node's PTY runs on — its scope, which for an attached node is
-  // the host attachment, not the (local) project. Shared by the terminal drop and the ⌘M composer's
-  // attach, so the two can never upload one file to two different machines.
-  const dropProjectId = (): string => {
-    const dropConn = data.ssh as SshConnection | undefined
-    return dropConn ? sshConnectionScope(dropConn) : useProjects.getState().activeProjectId
-  }
+  // Uploads go over the master this node's PTY runs on (`nodeUploadScope`).
+  const dropProjectId = (): string => nodeUploadScope(data.ssh as SshConnection | undefined)
   /**
    * Files arriving by DROP or by PASTE become paths in the terminal — what a native terminal does
    * on a drop, and the only thing a shell (or an agent reading its prompt) can act on. Shared so

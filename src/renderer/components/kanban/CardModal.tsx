@@ -34,10 +34,9 @@ import { useSession } from '../../session/session'
 // use — NOT a bespoke resume path, so a click here gets the same WakeInputBuffer protection and
 // retries. Importing one function out of the canvas node module is safe: TerminalNode.tsx already
 // imports from `components/kanban/*`, and none of those re-import CardModal.
-import { sshConnectionScope, wakeHibernatedNode } from '../../nodes/TerminalNode'
+import { nodeUploadScope, wakeHibernatedNode } from '../../nodes/TerminalNode'
 import { droppedPaths } from '../../terminal/file-drop'
 import { requestTerminalFocusOnExit } from '../../terminal/useMdModeFocus'
-import { useProjects } from '../../state/projects'
 import type { ProjectKanban } from '@shared/types'
 import type { KanbanSession } from './KanbanView'
 import { BoardLogPanel } from './BoardLogPanel'
@@ -553,11 +552,7 @@ export function CardModal({ session, columnTitle, board, onChangeBoard, onClose,
                             pathsForFiles={(files) =>
                               droppedPaths(files, {
                                 sshRemoteTmux: !!session.spawn.sshRemoteTmux,
-                                projectId: session.spawn.sshRemoteTmux
-                                  ? session.spawn.ssh
-                                    ? sshConnectionScope(session.spawn.ssh)
-                                    : useProjects.getState().activeProjectId
-                                  : ''
+                                projectId: session.spawn.sshRemoteTmux ? nodeUploadScope(session.spawn.ssh) : ''
                               })
                             }
                             onShowTerminal={() => {

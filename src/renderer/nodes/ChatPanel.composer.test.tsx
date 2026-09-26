@@ -394,6 +394,24 @@ describe('model / effort labels', () => {
     expect(onShowTerminal).toHaveBeenCalledTimes(1)
   })
 
+  it('stands the labels down in the unconfirmed-send window (#953): the turn is starting, not idle', async () => {
+    setUsage('claude-opus-5', 'high')
+    setAgentState('done')
+    await mount()
+    await act(async () => type(textarea(), 'go'))
+    await act(async () => {
+      textarea().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    })
+    await flush()
+    expect(sendText).toHaveBeenCalledWith(NODE, 'go')
+    expect(modelBtn()!.disabled).toBe(true)
+    expect(effortBtn()!.disabled).toBe(true)
+    // The real state speaks (the turn ran and finished): the labels come back.
+    await act(async () => setAgentState('working'))
+    await act(async () => setAgentState('done'))
+    expect(modelBtn()!.disabled).toBe(false)
+  })
+
   it('drops the effort label first, then the model label, as the composer narrows', async () => {
     // Every observer (the thread's and the composer's) hears the resize, like the real thing.
     const cbs: Array<(entries: Array<{ contentRect: { width: number } }>) => void> = []

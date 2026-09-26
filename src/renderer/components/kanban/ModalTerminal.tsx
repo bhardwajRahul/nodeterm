@@ -48,6 +48,7 @@ import {
 } from '../../terminal/terminal-config'
 import { useXtermVisualSettings } from '../../terminal/useXtermVisualSettings'
 import {
+  nodeUploadScope,
   owningProjectId,
   resolveSshRemote,
   reportSshDrop,
@@ -473,9 +474,7 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch, covere
     let paths: string[]
     if (spawn.sshRemoteTmux) {
       // Uploads go over the master this card's PTY runs on — its scope, not the project's.
-      const projectId = spawn.ssh
-        ? sshConnectionScope(spawn.ssh)
-        : useProjects.getState().activeProjectId
+      const projectId = nodeUploadScope(spawn.ssh)
       setUploading(true)
       try {
         paths = await droppedPaths(files, { sshRemoteTmux: true, projectId })

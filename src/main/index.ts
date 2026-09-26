@@ -127,11 +127,13 @@ import { projectCapabilityGrantedFor } from '../shared/project-capability-consen
 import { askpassServer, ensureAskpassScript } from './remote-ssh/ssh-askpass'
 import { appSshAgent } from './remote-ssh/ssh-agent'
 import {
-  writePendingAnswerLocal,
+  localHeldPermissionIo,
   startPendingSweep,
   isValidPendingId,
   syntheticAnsweredEvent
 } from '../core/agents/pending-approvals'
+import { answerHeldPermission, type HeldPermissionIo } from '../core/agents/permission-decision'
+import type { AnswerPermissionPayload } from '../shared/agents/permission-answer'
 import { setMainWindow, getMainWindow, sendToMain, closeAction, createCrashReloadPolicy } from './main-window'
 import {
   MENU_ITEM_ID_CLOSE,
@@ -2786,28 +2788,31 @@ app.whenReady().then(async () => {
   // project: an SSH project's hook runs on the REMOTE host (write over its ControlMaster), a local
   // project's on THIS machine (write under os.homedir() — the hook uses $HOME, which may differ from
   // the project cwd). pendingId is validated before it is interpolated into any path/command.
-  corePlatform.handle(
-    IPC.agentAnswerPermission,
-    async (payload: { nodeId: string; pendingId: string; decision: 'allow' | 'deny' }) => {
-      const { nodeId, pendingId, decision } = payload ?? ({} as typeof payload)
-      if (!isValidPendingId(pendingId)) return false
-      if (decision !== 'allow' && decision !== 'deny') return false
-      const sshProjectId = workspaceStore.sshProjectIdForNode(nodeId)
-      const ok =
-        sshProjectId && sshProjectManager
-          ? await sshProjectManager.writePendingAnswer(sshProjectId, pendingId, decision)
-          : await writePendingAnswerLocal(pendingId, decision, homedir())
-      // Optimistic flip: on a successful write, emit the same synthetic "answered" transition the
-      // held hook's second POST will produce, so the NEEDS YOU badge clears instantly instead of
-      // waiting for that POST to round-trip. The later hook POST is an idempotent duplicate (a
-      // same-state working re-assert is a no-op). See docs/hook-reply-approvals.md.
-      if (ok) {
-        const ev = syntheticAnsweredEvent(nodeId, pendingId, decision)
-        if (ev) emitAgentStatus(ev)
-      }
-      return ok
+  corePlatform.handle(IPC.agentAnswerPermission, async (payload: AnswerPermissionPayload) => {
+    const { nodeId, pendingId } = payload ?? ({} as AnswerPermissionPayload)
+    if (typeof nodeId !== 'string' || !isValidPendingId(pendingId)) return false
+    const sshProjectId = workspaceStore.sshProjectIdForNode(nodeId)
+    // The ONE answer body both shells share (core/agents/permission-decision.ts): read the held
+    // request on the host the agent runs on, validate + build the decision there, write it back.
+    // A structured answer is refused without a readable request; the legacy words are not.
+    const io: HeldPermissionIo =
+      sshProjectId && sshProjectManager
+        ? {
+            readPending: () => sshProjectManager!.readPendingRequest(sshProjectId, pendingId),
+            write: (content) => sshProjectManager!.writePendingAnswer(sshProjectId, pendingId, content)
+          }
+        : localHeldPermissionIo(pendingId, homedir())
+    const res = await answerHeldPermission(pendingId, { decision: payload.decision, answer: payload.answer }, io)
+    // Optimistic flip: on a successful write, emit the same synthetic "answered" transition the
+    // held hook's second POST will produce, so the NEEDS YOU badge clears instantly instead of
+    // waiting for that POST to round-trip. The later hook POST is an idempotent duplicate (a
+    // same-state working re-assert is a no-op). See docs/hook-reply-approvals.md.
+    if (res.ok && res.decision) {
+      const ev = syntheticAnsweredEvent(nodeId, pendingId, res.decision)
+      if (ev) emitAgentStatus(ev)
     }
-  )
+    return res.ok
+  })
   // Read-a-finished-session ack (this feature): the renderer's unread-clear funnel calls it when the
   // just-read node's latest state is `done`. The mirror resolves the node's done inbox event(s)
   // (phone Inbox archives the card) and re-sends an 'end' live-update so the paired phone dismisses

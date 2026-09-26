@@ -2176,6 +2176,29 @@ terminal opens keep their existing identity policy; Server Edition still require
 for every control verb. Legacy mobile/SSH callers must present this instance’s node token for
 command-bearing opens; this does not add a human-confirm dialog or change mobile transport APIs.
 
+- **Hook-reply answers: plans and questions** (`core/agents/permission-decision.ts`, full write-up in
+  **`docs/hook-reply-approvals.md`**) — the managed hook holds a Claude `PermissionRequest` and polls an
+  answer file. For `ExitPlanMode` / `AskUserQuestion` (`requiresUserInteraction`) Claude **DROPS a bare
+  allow**, so the answer must carry `updatedInput`: plan = `{}` (+ optional session `setMode
+  acceptEdits|default`, never `auto`), question = the request's own `questions` + `answers`. Rules a
+  refactor must not undo: (1) **only core builds decision JSON**, from the pending request file on the
+  agent's host (never renderer-echoed questions), validating every field; (2) the script prints only the
+  fixed words' decisions or a file that passes the strict prefix/size/one-line bound
+  (`isBoundedAnswerContent` is the TS twin — both writers refuse anything the script would ignore);
+  (3) answer content never rides an argv (the answered POST carries the decoded verb; SSH writes go on
+  stdin); (4) a plain `allow` maps to `updatedInput:{}` for a plan and is swallowed (hook keeps
+  holding) for a question — core refuses to write it and the header hides ✓ Approve for that ticket;
+  (5) these two tools hold 540 s (`PERM_WAIT_SECS_INTERACTIVE`) under the explicit `timeout: 600` we
+  write on the PermissionRequest handler — except a subagent's request (payload carries `agent_id`),
+  whose dialog awaits the hook; (6) structured answers are gated on the SCRIPT REVISION: an old script on
+  an SSH host (rewritten only at connect) silently ignores JSON while the write succeeds, so the hook
+  server keeps `held` only for `clientRevision >= MIN_STRUCTURED_ANSWER_REVISION` and core refuses a
+  structured answer (or a plain plan allow) for a ticket it did not record as capable — never a false
+  "answered". The renderer gets `held: {pendingId, toolName, questions?}` on the event/store (kept while blocked
+  OR waiting), separate from the approve/deny `pendingId` the mirror strips from a question;
+  `questions` (a held AskUserQuestion's exact question texts, from the one `readQuestions`) is what
+  the ⌘M answer controls match their card by — absent = unreadable input = no controls. Desktop local + SSH, Server Edition local;
+  relay unchanged; phone keeps `allow`/`deny` (its plan approve now works via the script mapping).
 - **Per-node hook identity** (`src/core/agents/node-auth-*.ts`, `node-token-*.ts`,
   `node-identity-policy.ts` — full write-up in **`docs/node-identity.md`**) — the shared bearer proves
   "a session on this machine", never *which* session, so every node also gets a capability derived
@@ -2514,6 +2537,12 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   kept to one line with emphasis escaped), degrading to no body (the old chip) on any other shape;
   ChatPanel shows a part with a body as an expanded "Plan"/"Question" card through `MarkdownText` with its result under it, and
   the find-bar index (`linesFrom`) indexes the body in full like assistant text.
+  **Answer controls on those cards (2026-09).** Only the card the node's `held` ticket belongs to gets
+  controls (`lib/chatAnswer.ts` `activeAnswerCard`: newest unanswered card of the held tool; a question
+  also needs identical question texts — `held.questions` and the card's `questions` come from the ONE
+  `readQuestions`), and only while the pane is in a dialog state. They send a `PermissionAnswer`
+  through `answerPermission`; a refusal is a quiet retryable error pointing at the terminal. Plan's
+  default button is `restore` — never auto. See docs/hook-reply-approvals.md.
 - **Subagent visualization** (agents in `SUBAGENT_CAPABLE`) — `subagent-start`/`subagent-end`
   normalized events (from Claude's `PreToolUse`/`PostToolUse` on tool `Agent`/`Task`, correlated
   by `tool_use_id`) drive a transient `state/agentNodes.ts` store. Claude launches subagents

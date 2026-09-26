@@ -157,6 +157,39 @@ describe('SshProjectManager', () => {
     }
   })
 
+  it('writePendingAnswer puts a structured decision on STDIN, never in the remote command', async () => {
+    const { mgr, run } = makeMgr()
+    await mgr.connect('p1', conn)
+    const json =
+      '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"it\'s $(rm -rf ~)"}}}'
+    expect(await mgr.writePendingAnswer('p1', 'node-1-2', json)).toBe(true)
+    const call = run.mock.calls.find((c) => (c[0] as string[]).join(' ').includes('.answer'))!
+    expect(call[1]).toBe(json)
+    expect((call[0] as string[]).join(' ')).not.toContain('hookSpecificOutput')
+    expect((call[0] as string[]).join(' ')).not.toContain('rm -rf')
+  })
+
+  it('readPendingRequest reads the held request over the master, bounded, and null on any failure', async () => {
+    const { mgr, run } = makeMgr()
+    expect(await mgr.readPendingRequest('p1', 'node-1-2')).toBeNull() // not connected
+    await mgr.connect('p1', conn)
+    const req = '{"hook_event_name":"PermissionRequest","tool_name":"ExitPlanMode","tool_input":{}}'
+    run.mockImplementation(async (args: string[]) =>
+      args.join(' ').includes('pending/node-1-2.json') ? { code: 0, stdout: req } : { code: 0, stdout: '' }
+    )
+    expect(await mgr.readPendingRequest('p1', 'node-1-2')).toBe(req)
+    const cmd = (run.mock.calls.at(-1)![0] as string[]).join(' ')
+    expect(cmd).toContain('head -c')
+    expect(cmd).toContain('exit 3') // a missing file is an answer, reported as null
+    run.mockImplementation(async () => ({ code: 3, stdout: '' }))
+    expect(await mgr.readPendingRequest('p1', 'node-1-2')).toBeNull()
+    run.mockImplementation(async () => { throw new Error('master down') })
+    expect(await mgr.readPendingRequest('p1', 'node-1-2')).toBeNull()
+    const before = run.mock.calls.length
+    expect(await mgr.readPendingRequest('p1', '../x')).toBeNull()
+    expect(run.mock.calls.length).toBe(before)
+  })
+
   it('writePendingAnswer refuses an invalid pendingId and a disconnected project (no run)', async () => {
     const { mgr, run } = makeMgr()
     // Not connected → false, no ssh command issued.
@@ -164,8 +197,9 @@ describe('SshProjectManager', () => {
     await mgr.connect('p1', conn)
     const before = run.mock.calls.length
     expect(await mgr.writePendingAnswer('p1', '../evil', 'allow')).toBe(false)
-    // @ts-expect-error, runtime guard against a bad decision value
+    // Content the hook script would not print is refused before any ssh (same bound as the script).
     expect(await mgr.writePendingAnswer('p1', 'ok-id', 'always')).toBe(false)
+    expect(await mgr.writePendingAnswer('p1', 'ok-id', '{"hookSpecificOutput":{"hookEventName":"PreToolUse"}}')).toBe(false)
     expect(run.mock.calls.length).toBe(before) // neither refusal touched ssh
   })
 

@@ -1,4 +1,5 @@
 import { sessionContextWindow } from '../model-window'
+import { labelHeldForRevision } from './permission-decision'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
 import { randomUUID, timingSafeEqual } from 'crypto'
 import { readFileSync, mkdirSync, chmodSync, unlinkSync } from 'fs'
@@ -844,7 +845,10 @@ export class HookServer {
           // dir for claude alone (codex rollouts and gemini chats live in unrelated trees, and
           // those agents have their own identity spine).
           const account = observedClaudeAccount(agentId, payload)
-          const normalized = normalizeFor(agentId, { nodeId, agentId, payload })
+          // A held request keeps its `held` ticket only when the posting script can honor a
+          // structured answer (core/agents/permission-decision.ts, MIN_STRUCTURED_ANSWER_REVISION).
+          const raw = normalizeFor(agentId, { nodeId, agentId, payload })
+          const normalized = raw ? labelHeldForRevision(raw, clientRevision) : raw
           if (normalized && this.listener)
             this.listener({ ...normalized, verified, clientRevision, ...(account ? { account } : {}) })
         }

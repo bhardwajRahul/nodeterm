@@ -21,6 +21,9 @@ import { E_UNSUPPORTED } from '@shared/rpc'
 import { Spinner } from '../components/Spinner'
 import { CHAT_OPTIMISTIC_WORKING_MS, chatActivity, planLiveReload } from '../lib/chatLive'
 import { ChatLoadingStatus } from './ChatPanelFallback'
+import { activeAnswerCard } from '../lib/chatAnswer'
+import { PlanAnswerControls, QuestionAnswerControls } from './ChatAnswerControls'
+import type { PermissionAnswer } from '@shared/agents/permission-answer'
 
 // Memoized bubble: marked+DOMPurify re-ran for EVERY message on each ChatPanel render (each
 // turn-finish reload, each keystroke re-render). Text is stable per message, so cache per text.
@@ -137,6 +140,9 @@ export function ChatPanel({
   const paused = useAgentStatus((s) => s.byId[nodeId]?.paused)
   const dropped = useAgentStatus((s) => s.byId[nodeId]?.dropped)
   const sessionEnded = useAgentStatus((s) => s.byId[nodeId]?.sessionEnded)
+  // The request the node's managed hook is holding (plan / question / permission). The store keeps
+  // the same object across same-ticket events, so this selector re-renders only on a new hold.
+  const held = useAgentStatus((s) => s.byId[nodeId]?.held)
   const customAgents = useSettings((s) => s.settings.customAgents)
   // Not just `working`: a TUI dialog (`waiting`/`blocked`) would be ANSWERED by sendText's Enter,
   // and a pane whose CLI is gone (hibernated/paused/dropped/exited) is a SHELL that would execute it.
@@ -146,6 +152,14 @@ export function ChatPanel({
   // send and the first hook event: set by `send`, retired by the next state change (the real state
   // takes over) or, for an agent whose hooks never report, after a bounded timeout.
   const activity = chatActivity({ refusal, optimistic, readOnly: !!readOnly })
+  // The one Plan / Question card that gets answer controls (lib/chatAnswer.ts): only while the pane
+  // holds a TUI dialog (`dialog` — the CLI is in the pane and waiting) and only on the card the held
+  // ticket belongs to. A host whose hook script predates structured answers never sends `held`, so
+  // its cards stay read-only — the terminal path is then the only one, exactly as before.
+  const answerCard = useMemo(
+    () => (!readOnly && refusal === 'dialog' ? activeAnswerCard(messages, held) : null),
+    [readOnly, refusal, messages, held]
+  )
   const msgsRef = useRef<HTMLDivElement>(null)
   const prevState = useRef(state)
   // Request token: only the NEWEST readTranscript may land. An older read resolving late (the
@@ -486,6 +500,19 @@ export function ChatPanel({
     setInput('')
   }, [api, input, nodeId, agentId])
 
+  // Answer the held request through core, which validates the answer against the pending request
+  // file and builds what the hook prints. The ticket is re-checked against the store at SEND time:
+  // a hold that ended (answered in the TUI, timed out, replaced) while the user was choosing must
+  // not receive an answer meant for it — that reads as a refusal, and the card says to use the
+  // terminal. `false` from core is the same (see ChatAnswerControls).
+  const answerHeld = useCallback(
+    async (pendingId: string, answer: PermissionAnswer): Promise<boolean> => {
+      if (useAgentStatus.getState().byId[nodeId]?.held?.pendingId !== pendingId) return false
+      return api.answerPermission({ nodeId, pendingId, answer })
+    },
+    [api, nodeId]
+  )
+
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     // Shift+Enter falls through to the textarea's own newline; an IME commit is not a send.
     const action = chatKeyAction({
@@ -585,6 +612,25 @@ export function ChatPanel({
                   <div className="term-chat__tool-card-title">{toolCardTitle(p.name)}</div>
                   <MarkdownText text={p.body} />
                   {p.result && <pre className="term-chat__tool-result">{p.result}</pre>}
+                  {answerCard && held && answerCard.message === i && answerCard.part === j && (
+                    // Keyed by the ticket: a new hold on the same card starts from a clean state.
+                    p.name === 'AskUserQuestion' && p.questions ? (
+                      <QuestionAnswerControls
+                        key={held.pendingId}
+                        questions={p.questions}
+                        agentLabel={agentLabel}
+                        chip={mdChip}
+                        onSubmit={(a) => answerHeld(held.pendingId, a)}
+                      />
+                    ) : (
+                      <PlanAnswerControls
+                        key={held.pendingId}
+                        agentLabel={agentLabel}
+                        chip={mdChip}
+                        onSubmit={(a) => answerHeld(held.pendingId, a)}
+                      />
+                    )
+                  )}
                 </div>
               ) : (
                 <details key={j} className="term-chat__tool">
@@ -604,7 +650,13 @@ export function ChatPanel({
           // composer placeholder's own (`chatComposerPlaceholder`), so the two never disagree.
           <div className="term-chat__activity" role="status" aria-live="polite">
             {activity === 'working' && <Spinner />}
-            {chatComposerPlaceholder({ readonly: false, refusal: activity, agentLabel, chip: mdChip })}
+            {chatComposerPlaceholder({
+              readonly: false,
+              refusal: activity,
+              agentLabel,
+              chip: mdChip,
+              answerOnCard: answerCard !== null
+            })}
           </div>
         )}
       </div>
@@ -615,7 +667,13 @@ export function ChatPanel({
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={onKeyDown}
-          placeholder={chatComposerPlaceholder({ readonly, refusal, agentLabel, chip: mdChip })}
+          placeholder={chatComposerPlaceholder({
+            readonly,
+            refusal,
+            agentLabel,
+            chip: mdChip,
+            answerOnCard: answerCard !== null
+          })}
           disabled={readonly || refusal !== null}
           rows={2}
         />

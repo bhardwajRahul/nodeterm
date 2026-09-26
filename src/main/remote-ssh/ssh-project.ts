@@ -74,6 +74,7 @@ import { appSshAgent } from './ssh-agent'
 import { probeAgentSockToPin } from '../../core/remote-ssh/agent-probe'
 import { sessionName } from '../../core/tmux-naming'
 import { remoteAtomicWrite } from '../remote-atomic-write'
+import { isBoundedAnswerContent, PENDING_REQUEST_MAX_BYTES } from '../../core/agents/permission-decision'
 import { buildCodexLauncherScript } from '../../core/codex-identity-proxy'
 import {
   ACCOUNT_ID_RE,
@@ -1884,24 +1885,26 @@ export class SshProjectManager {
   }
 
   /**
-   * Deterministic hook-reply approvals (docs/hook-reply-approvals.md): write the one-line answer
-   * file for a held REMOTE permission hook, on the project's host over its ControlMaster (atomic
-   * tmp+mv, 0600 via umask). The hook is polling `~/.nodeterm/pending/<pendingId>.answer` on that
-   * host. `pendingId` is validated by the caller (main) before it reaches here; this method also
-   * refuses anything but the safe charset as defense-in-depth, since it interpolates into a remote
-   * shell command. No-ops (false) when the project isn't connected or the write fails.
+   * Deterministic hook-reply approvals (docs/hook-reply-approvals.md): write the answer file for a
+   * held REMOTE permission hook, on the project's host over its ControlMaster (atomic tmp+mv, 0600
+   * via umask). The hook is polling `~/.nodeterm/pending/<pendingId>.answer` on that host.
+   * `content` is a legacy word or a core-built JSON decision; it travels on STDIN, never in the
+   * remote command line (argv on both ends — a structured answer carries user text), and anything
+   * the hook script would not print is refused here too (`isBoundedAnswerContent`). `pendingId` is
+   * validated by the caller (main) before it reaches here; this method also refuses anything but the
+   * safe charset as defense-in-depth, since it interpolates into a remote shell command. No-ops
+   * (false) when the project isn't connected or the write fails.
    */
   async writePendingAnswer(
     projectId: string,
     pendingId: string,
-    decision: 'allow' | 'deny'
+    content: string
   ): Promise<boolean> {
     const c = this.conns.get(projectId)
     if (!c) return false
     if (!/^[A-Za-z0-9_-]+$/.test(pendingId)) return false
-    if (decision !== 'allow' && decision !== 'deny') return false
-    const dir = c.remoteHome ? `${c.remoteHome}/.nodeterm/pending` : '~/.nodeterm/pending'
-    const file = `${dir}/${pendingId}.answer`
+    if (typeof content !== 'string' || !isBoundedAnswerContent(content)) return false
+    const file = `${this.pendingDirFor(c)}/${pendingId}.answer`
     const { code } = await this.r
       .run(
         childArgs(
@@ -1909,10 +1912,34 @@ export class SshProjectManager {
           c.controlPath,
           remoteAtomicWrite(file, { restrictPermissions: true }).command
         ),
-        decision
+        content
       )
       .catch(() => ({ code: 1, stdout: '' }))
     return code === 0
+  }
+
+  /**
+   * Read the request file a held REMOTE permission hook wrote (`<pendingId>.json`, the raw
+   * PermissionRequest payload) — the source of truth a structured answer is validated against.
+   * Bounded (`head -c`), and null for every failure: not connected, the file is gone (the hold
+   * ended — `exit 3`), a dead master, an over-long file. The caller then refuses a structured
+   * answer and keeps the legacy words working exactly as before.
+   */
+  async readPendingRequest(projectId: string, pendingId: string): Promise<string | null> {
+    const c = this.conns.get(projectId)
+    if (!c) return null
+    if (!/^[A-Za-z0-9_-]+$/.test(pendingId)) return null
+    const f = quoteRemotePath(`${this.pendingDirFor(c)}/${pendingId}.json`)
+    const cmd = `if [ -f ${f} ]; then head -c ${PENDING_REQUEST_MAX_BYTES + 1} ${f}; else exit 3; fi`
+    const { code, stdout } = await this.r
+      .run(childArgs(c.conn, c.controlPath, cmd))
+      .catch(() => ({ code: 1, stdout: '' }))
+    if (code !== 0 || typeof stdout !== 'string' || Buffer.byteLength(stdout, 'utf8') > PENDING_REQUEST_MAX_BYTES) return null
+    return stdout
+  }
+
+  private pendingDirFor(c: { remoteHome?: string }): string {
+    return c.remoteHome ? `${c.remoteHome}/.nodeterm/pending` : '~/.nodeterm/pending'
   }
 
   /**

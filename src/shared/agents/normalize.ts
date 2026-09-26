@@ -1,5 +1,6 @@
 import type { AgentId } from './config'
 import type { ObservedClaudeAccount } from '../types'
+import { ASK_USER_QUESTION_TOOL, isSafeToolName, readQuestions, type HeldPermission } from './permission-answer'
 
 export type AgentState = 'working' | 'waiting' | 'blocked' | 'done'
 
@@ -69,6 +70,13 @@ export interface NormalizedAgentEvent {
   // concurrent parent picker cannot hide their approval tickets. The canvas keys the approve/deny
   // buttons off `pendingId`, which is now absent on a question. */
   askKind?: 'question' | 'approval'
+  /** blocked (Claude PermissionRequest with a held hook) only: the answer-file ticket PLUS the tool
+   *  being asked about, so a surface can tell a plan (ExitPlanMode) or question (AskUserQuestion)
+   *  hold from an ordinary permission and offer the right controls (a structured
+   *  `answerPermission`). Deliberately separate from `pendingId`, which the mirror STRIPS from a
+   *  question so no approve/deny button lights on a picker — this field lights nothing by itself.
+   *  Additive and optional: an older consumer ignores it. See docs/hook-reply-approvals.md. */
+  held?: HeldPermission
   // session
   sessionTitle?: string
   // session lifecycle phase: 'start' resets to idle, 'end' resets + clears loop/fan-out
@@ -168,6 +176,8 @@ interface ClaudePayload {
     cron?: string
     /** Bash only: the task was launched as a background shell (`run_in_background: true`). */
     run_in_background?: boolean
+    /** AskUserQuestion only — read through `readQuestions`, never trusted as typed. */
+    questions?: unknown
   }
   tool_response?: {
     status?: string
@@ -187,6 +197,14 @@ interface ClaudePayload {
  */
 export function isAsyncSubagentLaunch(r: { status?: string; isAsync?: boolean } | undefined): boolean {
   return r?.status === 'async_launched' || r?.isAsync === true
+}
+
+/** The held request a PermissionRequest names. A question also carries its exact texts (the same
+ *  reader the question card uses), so a surface offers controls only on the card it belongs to. */
+function heldOf(pendingId: string, toolName: string, p: ClaudePayload): HeldPermission {
+  if (toolName !== ASK_USER_QUESTION_TOOL) return { pendingId, toolName }
+  const qs = readQuestions(p.tool_input)
+  return qs ? { pendingId, toolName, questions: qs.map((q) => q.question) } : { pendingId, toolName }
 }
 
 export function normalizeClaude(env: RawHookEnvelope): NormalizedAgentEvent | null {
@@ -318,7 +336,8 @@ export function normalizeClaude(env: RawHookEnvelope): NormalizedAgentEvent | nu
       ...(tool && tool !== 'AskUserQuestion' ? { askKind: 'approval' as const } : {}),
       lastMessage: p.last_assistant_message,
       // Deterministic-approval ticket (present only when the wait-branch of the managed hook ran).
-      ...(p.nodeterm_pending_id ? { pendingId: p.nodeterm_pending_id } : {})
+      ...(p.nodeterm_pending_id ? { pendingId: p.nodeterm_pending_id } : {}),
+      ...(p.nodeterm_pending_id && isSafeToolName(tool) ? { held: heldOf(p.nodeterm_pending_id, tool, p) } : {})
     }
   }
   if (ev === 'Notification') {

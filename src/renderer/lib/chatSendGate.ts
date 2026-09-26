@@ -66,23 +66,34 @@ export function canSendFromChat(agentId: string, s: ChatGateStatus): boolean {
  * in the header of the canvas node and of the kanban card modal alike (hence "the header"). An
  * exited CLI has no such chip: it is relaunched in the terminal itself. A write failure
  * (`readonly`) outranks everything: no state change will make that session writable.
+ *
+ * `answerOnCard`: the dialog is a held plan / question whose card in the thread carries answer
+ * controls (`lib/chatAnswer.ts`), so the copy points at the card first and keeps the terminal as
+ * the fallback — the card is the shorter path, the terminal still works.
  */
 export function chatComposerPlaceholder({
   readonly,
   refusal,
   agentLabel,
-  chip
+  chip,
+  answerOnCard = false
 }: {
   readonly: boolean
   refusal: ChatSendRefusal
   agentLabel: string
   chip: string
+  answerOnCard?: boolean
 }): string {
   if (readonly) return "Can't write to this session"
   switch (refusal) {
     case 'working':
       return `${agentLabel} is working…`
     case 'dialog':
+      if (answerOnCard) {
+        return chip
+          ? `${agentLabel} is waiting for your answer — answer on the card above, or press ${chip} to answer in the terminal`
+          : `${agentLabel} is waiting for your answer — answer on the card above`
+      }
       return chip
         ? `${agentLabel} is waiting for an answer in the terminal — press ${chip} to answer there`
         : `${agentLabel} is waiting for an answer in the terminal — switch back to the terminal to answer`

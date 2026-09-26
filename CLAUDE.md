@@ -2354,6 +2354,11 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
     over `pty.readSessionName`. `TerminalNode` polls it (~4 s) **only once this node's own sessionId
     is known** and **while the title still auto-tracks** (`data.titleAuto`, default true on agent
     nodes), and adopts it as the `title`. `term.onTitleChange` now feeds the `session` chip only.
+    **A poll of an unchanged transcript reads no bytes**: the local read is gated on the resolved
+    path's (size, mtime) (`titleCache`, bounded at 500, a failed tail read never cached), and the
+    remote one (`main/remote-title-reader.ts`) on the remote context tail's `offsetFor` for the SAME
+    path — that offset is the file size at the tail's last read, so a remote `/rename` lands within
+    the tail's idle backoff (≤ 10 s); an untracked session (offset unknown) always reads.
   - **title → session (write):** the moment the user renames the node by hand (header rename box /
     ✦ AI-name / sidebar / command palette → all funnel through `applyManualTitle` or
     `renameSession`), `titleAuto` flips to **false** (polling stops overwriting) and the chosen name

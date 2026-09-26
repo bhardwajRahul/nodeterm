@@ -472,6 +472,13 @@ export function setRemoteTranscriptReader(
   remoteReader = fn
 }
 
+// Title polls hit this every 4–15 s per agent node. The name can only change when the transcript
+// does, so (size, mtime) gates the 128 KB tail read. Keyed by the RESOLVED path (the account is
+// already folded into it). Bounded: oldest entries go first. A failed tail read is not cached — a
+// transient error must not pin a null title until the file next changes.
+const TITLE_CACHE_MAX = 500
+const titleCache = new Map<string, { size: number; mtimeMs: number; name: string | null }>()
+
 export async function readSessionName(
   sessionId: string,
   accountId?: string
@@ -486,9 +493,17 @@ export async function readSessionName(
   // Stale cache entries are healed inside resolveTranscriptPath (access-checked per hit).
   const p = await resolveTranscriptPath(sessionId, accountId)
   if (!p) return null
+  const st = await fs.promises.stat(p).catch(() => null)
+  const hit = st ? titleCache.get(p) : undefined
+  if (st && hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.name
   const tail = await readSmallTail(p, TITLE_TAIL_BYTES)
-  if (!tail) return null
-  return pickSessionName(tail)
+  const name = tail ? pickSessionName(tail) : null
+  if (st && tail !== undefined) {
+    titleCache.delete(p)
+    titleCache.set(p, { size: st.size, mtimeMs: st.mtimeMs, name })
+    if (titleCache.size > TITLE_CACHE_MAX) titleCache.delete(titleCache.keys().next().value!)
+  }
+  return name
 }
 
 // Durable resolver by working directory: Claude stores a project's transcripts under

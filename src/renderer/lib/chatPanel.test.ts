@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CHAT_FOLLOW_THRESHOLD_PX, chatAgentLabel, chatKeyAction, isNearBottom, shouldFollowOnLoad } from './chatPanel'
+import { CHAT_FOLLOW_THRESHOLD_PX, chatAgentLabel, chatKeyAction, isNearBottom, shouldFollowOnLoad, toolCardTitle } from './chatPanel'
 
 describe('chatKeyAction', () => {
   it('Enter sends', () => {
@@ -55,5 +55,13 @@ describe('chatAgentLabel', () => {
   it('falls back to a neutral word, never to Claude', () => {
     expect(chatAgentLabel('custom:gone', [])).toBe('Agent')
     expect(chatAgentLabel('custom:blank', [{ id: 'custom:blank', label: '  ' }])).toBe('Agent')
+  })
+})
+
+describe('toolCardTitle', () => {
+  it('names a plan and a question for what they are, anything else by its tool name', () => {
+    expect(toolCardTitle('ExitPlanMode')).toBe('Plan')
+    expect(toolCardTitle('AskUserQuestion')).toBe('Question')
+    expect(toolCardTitle('SomeFutureTool')).toBe('SomeFutureTool')
   })
 })

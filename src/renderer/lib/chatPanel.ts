@@ -53,3 +53,14 @@ export function chatAgentLabel(
   const custom = customAgents.find((c) => c.id === agentId)?.label?.trim()
   return custom || 'Agent'
 }
+
+/**
+ * The caption of an expanded tool card (a tool part that carries a readable `body` — see
+ * `core/chat-tool-body.ts`). Named for what the user is reading, not for the plumbing that carried
+ * it; an unknown tool with a body falls back to its own name.
+ */
+export function toolCardTitle(name: string): string {
+  if (name === 'ExitPlanMode') return 'Plan'
+  if (name === 'AskUserQuestion') return 'Question'
+  return name
+}

@@ -3248,6 +3248,29 @@ body,
   font-size: 11px;
   opacity: 0.85;
 }
+/* An expanded tool card: a tool part with a readable `body` (an ExitPlanMode plan, an
+   AskUserQuestion question). Same tint as the chip so it still reads as "the agent's tool call",
+   but open and full-width; no max-height, so a long plan scrolls with the thread. */
+.term-chat__tool-card {
+  margin: 6px 0;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.25);
+  border-left: 2px solid var(--accent);
+  border-radius: 6px;
+  min-width: 0;
+}
+.term-chat__tool-card-title {
+  margin-bottom: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.term-chat__tool-card .term-chat__tool-result {
+  padding-top: 6px;
+  border-top: 1px solid rgba(var(--tint-rgb), 0.1);
+}
 /* Shared loading spinner (`components/Spinner.tsx`). CSS-only: a ring with one transparent
    quarter, rotated. It inherits `currentColor` and scales with the surrounding font size, so the
    same element sits beside 11px bar text and 12px placeholder text without per-site sizing.

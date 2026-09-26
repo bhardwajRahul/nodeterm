@@ -14116,6 +14116,25 @@ body.focus-mode .dock:hover {
   white-space: nowrap;
 }
 
+/* A row's download mark (spinner → ✓ / !), pushed to the row's end. Same colours as the Explorer's
+   ⤓ states — one fact, read the same way on both surfaces. The spinner is `.ex-dl__spin`. */
+.files-node__dl {
+  margin-left: auto;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--muted);
+}
+.files-node__dl.done {
+  color: var(--success);
+}
+.files-node__dl.error {
+  color: var(--danger);
+  font-weight: 700;
+}
+
 .files-node__empty {
   padding: 10px 8px;
   font-size: 12px;

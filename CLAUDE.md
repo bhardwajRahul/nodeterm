@@ -1834,7 +1834,11 @@ else, and its context links must keep classifying across restarts).
   with base64, transferring less than 1.6 MiB including alignment/framing; idle replies contain
   only the size/range header. The encoded dd exit status must survive the shell pipeline:
   pipeline success alone can hide a failed read. Short/malformed replies and SSH failures throw,
-  retain the cursor, and back off from 2s to 60s with payload-free diagnostics. Bootstrap and
+  retain the cursor, and back off from 2s to 60s with payload-free diagnostics. A SEPARATE idle
+  backoff (`idleDelayMs`) stretches the 1 s poll after three consecutive empty successful reads
+  (2/4/8 s, capped at 10 s) and is reset by any data-bearing read and by every same-ref `track()`
+  — i.e. every hook POST for the session, which is what keeps a `<task-notification>` (it rides
+  a UserPromptSubmit hook) at ~1 s latency; never merge it with the failure backoff. Bootstrap and
   detected truncation restore usage without replaying historical task notifications/tool results,
   including a historical partial line completed later. A changed remote reference replaces its
   tracking generation so stale in-flight replies cannot publish. Server Edition uses the local

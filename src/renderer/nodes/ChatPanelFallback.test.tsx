@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createRoot, type Root } from 'react-dom/client'
 import { act } from 'react'
-import { ChatPanelFallback } from './ChatPanelFallback'
+import { ChatLoadingStatus, ChatPanelFallback } from './ChatPanelFallback'
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 let host: HTMLDivElement
@@ -45,6 +45,32 @@ describe('ChatPanelFallback', () => {
     expect(status.getAttribute('aria-live')).toBe('polite')
     expect(status.textContent).toBe('Loading conversation…')
     expect(status.querySelector('.nt-spinner')).toBeTruthy()
+  })
+})
+
+// The fallback hands over to ChatPanel's own initial "Loading conversation…" row. Two different
+// rows there swapped one spinner ring for another mid-load and REMOUNTED the role=status region,
+// which a screen reader announces twice. Both now render ChatLoadingStatus — identical DOM.
+describe('ChatLoadingStatus', () => {
+  it('is the fallback\'s status row, verbatim', () => {
+    act(() => root.render(<ChatPanelFallback />))
+    const fromFallback = host.querySelector('.term-chat__msgs')!.innerHTML
+    act(() => root.render(<ChatLoadingStatus text="Loading conversation…" />))
+    expect(host.innerHTML).toBe(fromFallback)
+    expect(host.innerHTML).toBe(
+      '<div class="term-chat__status" role="status" aria-live="polite"><span class="nt-spinner" aria-hidden="true"></span>Loading conversation…</div>'
+    )
+  })
+})
+
+// styles.css carries ONE ring spinner for the chat surfaces: `.nt-spinner` (frozen under reduced
+// motion). Lane B's local `.term-chat__spinner` kept rotating under reduced motion.
+describe('styles.css spinner', () => {
+  const css = readFileSync(join(__dirname, '../styles.css'), 'utf8').replace(/\r\n/g, '\n')
+  it('has exactly one spinner @keyframes, and no chat-local spinner', () => {
+    expect(css.match(/@keyframes [\w-]*spinner[\w-]*/g)).toEqual(['@keyframes nt-spinner-rotate'])
+    expect(css).not.toMatch(/term-chat-spin|\.term-chat__spinner|\.term-chat__loading|\.term-chat__fallback-status/)
+    expect(css).toContain('.term-chat__status {')
   })
 })
 

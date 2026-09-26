@@ -40,6 +40,7 @@ const { readTranscript, pending, session } = vi.hoisted(() => {
 vi.mock('../session/session', () => ({ useSession: () => session }))
 
 import { ChatPanel } from './ChatPanel'
+import { ChatPanelFallback } from './ChatPanelFallback'
 
 const NODE = 'n-chat-paging'
 let host: HTMLDivElement
@@ -134,11 +135,22 @@ afterEach(async () => {
 describe('ChatPanel progressive loading', () => {
   it('shows a loading row while the first read is in flight', async () => {
     await render()
-    const row = host.querySelector('.term-chat__loading')
+    const row = host.querySelector('.term-chat__status')
     expect(row?.textContent).toContain('Loading conversation…')
-    expect(row?.querySelector('.term-chat__spinner')).not.toBeNull()
+    expect(row?.getAttribute('role')).toBe('status')
+    expect(row?.querySelector('.nt-spinner')).not.toBeNull()
     await settle(0, { messages: [say(100, 'hi')] })
-    expect(host.querySelector('.term-chat__loading')).toBeNull()
+    expect(host.querySelector('.term-chat__status')).toBeNull()
+  })
+
+  it('the initial loading row is the lazy fallback\'s row, identical DOM (no ring swap, no re-announced status)', async () => {
+    const other = document.createElement('div')
+    const otherRoot = createRoot(other)
+    await act(async () => otherRoot.render(<ChatPanelFallback />))
+    const fallbackRow = other.querySelector('.term-chat__msgs')!.innerHTML
+    await act(async () => otherRoot.unmount())
+    await render()
+    expect(msgs().innerHTML).toBe(fallbackRow)
   })
 
   it('reads only a small tail window first', async () => {
@@ -157,6 +169,8 @@ describe('ChatPanel progressive loading', () => {
     expect(pending).toHaveLength(2)
     expect(pending[1].page).toEqual({ before: 1000, maxBytes: CHAT_OLDER_PAGE_BYTES })
     expect(host.querySelector('.term-chat__older')?.textContent).toContain('Loading earlier messages…')
+    // The app's one spinner, inside the row that is the status region.
+    expect(host.querySelector('.term-chat__older[role="status"] .nt-spinner')).not.toBeNull()
     // The loading row appeared ABOVE the viewport: shifted by its height, not jumped.
     expect(msgs().scrollTop).toBe(50 + ROW)
 

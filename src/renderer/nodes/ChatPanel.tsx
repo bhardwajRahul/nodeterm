@@ -18,6 +18,8 @@ import {
   type ChatThread
 } from '../lib/chatPaging'
 import { E_UNSUPPORTED } from '@shared/rpc'
+import { Spinner } from '../components/Spinner'
+import { ChatLoadingStatus } from './ChatPanelFallback'
 
 // Memoized bubble: marked+DOMPurify re-ran for EVERY message on each ChatPanel render (each
 // turn-finish reload, each keystroke re-render). Text is stable per message, so cache per text.
@@ -412,14 +414,11 @@ export function ChatPanel({
       </div>
       <div className="term-chat__msgs" ref={msgsRef} onScroll={onScroll}>
         {initialLoading && (
-          <div className="term-chat__loading" role="status">
-            <span className="term-chat__spinner" aria-hidden="true" />
-            <span>{EMPTY_TEXT.loading.title}</span>
-          </div>
+          <ChatLoadingStatus text={EMPTY_TEXT.loading.title} />
         )}
         {messages.length > 0 && olderState === 'loading' && (
           <div className="term-chat__older" role="status">
-            <span className="term-chat__spinner" aria-hidden="true" />
+            <Spinner />
             <span>Loading earlier messages…</span>
           </div>
         )}

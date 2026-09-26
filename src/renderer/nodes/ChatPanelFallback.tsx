@@ -2,6 +2,23 @@ import { Spinner } from '../components/Spinner'
 import { chipFor } from '../lib/keybindingOverrides'
 
 /**
+ * The ⌘M panel's "loading" status row — ONE component for both the lazy-chunk fallback below and
+ * ChatPanel's own initial "Loading conversation…" row, so the handover from one to the other
+ * renders identical DOM. Two rows there (lane-local spinners) swapped one ring for another
+ * mid-load, one of them kept rotating under reduced motion, and the role=status region was
+ * REMOUNTED — which a screen reader announces a second time. It lives here, in the startup chunk,
+ * because the fallback must not import the lazy ChatPanel.
+ */
+export function ChatLoadingStatus({ text }: { text: string }) {
+  return (
+    <div className="term-chat__status" role="status" aria-live="polite">
+      <Spinner />
+      {text}
+    </div>
+  )
+}
+
+/**
  * What the ⌘M face shows while the lazy `ChatPanel` chunk (it carries the markdown renderer) is
  * still loading — the `<Suspense>` fallback at EVERY one of its mount sites: the canvas terminal
  * node, the kanban card modal and the closed-transcript dialog (which passes its own title and
@@ -29,10 +46,7 @@ export function ChatPanelFallback({ title, hint }: { title?: string; hint?: stri
         </span>
       </div>
       <div className="term-chat__msgs">
-        <div className="term-chat__fallback-status" role="status" aria-live="polite">
-          <Spinner />
-          Loading conversation…
-        </div>
+        <ChatLoadingStatus text="Loading conversation…" />
       </div>
     </div>
   )

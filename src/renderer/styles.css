@@ -3154,16 +3154,8 @@ body,
 .term-chat__retry:hover {
   background: rgba(var(--tint-rgb), 0.12);
 }
-/* Progressive loading (lane B, chat paging). A LOCAL spinner on purpose: the shared one lives on
-   another branch and is unified at integration. */
-.term-chat__loading {
-  margin: auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: rgba(var(--tint-rgb), 0.4);
-}
+/* Progressive loading (chat paging): the top-of-thread rows. Their spinner is the shared
+   `.nt-spinner` (`components/Spinner.tsx`) — never a local one. */
 .term-chat__older {
   flex: 0 0 auto;
   display: flex;
@@ -3179,25 +3171,6 @@ body,
 }
 .term-chat__older--start {
   color: rgba(var(--tint-rgb), 0.22);
-}
-.term-chat__spinner {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  border: 1.5px solid rgba(var(--tint-rgb), 0.15);
-  border-top-color: rgba(var(--tint-rgb), 0.55);
-  animation: term-chat-spin 0.8s linear infinite;
-  animation-play-state: var(--nt-anim-state);
-}
-@keyframes term-chat-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .term-chat__spinner {
-    animation-duration: 2.4s;
-  }
 }
 .term-chat__msg {
   max-width: 92%;
@@ -3306,8 +3279,9 @@ body,
   }
 }
 
-/* ⌘M chat panel shell shown while the lazy ChatPanel chunk loads (`nodes/ChatPanelFallback.tsx`). */
-.term-chat__fallback-status {
+/* ⌘M chat panel "Loading conversation…" row (`ChatLoadingStatus`, `nodes/ChatPanelFallback.tsx`):
+   the lazy-chunk fallback AND ChatPanel's own initial load render it, so the handover is seamless. */
+.term-chat__status {
   margin: auto;
   display: flex;
   align-items: center;

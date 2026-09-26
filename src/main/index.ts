@@ -2655,6 +2655,21 @@ app.whenReady().then(async () => {
       const ref = await remoteTranscriptRefFor(sessionId, cwd, accountId, nodeId)
       return ref ? await readRemoteTranscript(sessionId!, ref) : null
     },
+    // The paged ⌘M read: a RANGED read on the host (window + file size in one ssh round trip)
+    // instead of `readTail`'s 5 MB, which this leg used to pull on every panel open and every
+    // turn-end reload. Same ref resolution and same forget-a-located-ref-on-failure rule as
+    // `readRemoteTranscript`; the path it reads is already jailed by `isSafeRemoteTranscriptPath`.
+    readRemotePage: async ({ sessionId, cwd, accountId, nodeId }, page) => {
+      const ref = await remoteTranscriptRefFor(sessionId, cwd, accountId, nodeId)
+      if (!ref) return null
+      try {
+        const w = await remoteFile.readTranscriptPage(ref, page.before, page.maxBytes)
+        return { ok: true, data: w.data, start: w.start }
+      } catch {
+        if (locatedTranscriptSessions.delete(sessionId!)) remoteTranscriptBySession.delete(sessionId!)
+        return { ok: false }
+      }
+    },
     remoteExists: async ({ sessionId, accountId, nodeId }) =>
       sessionId ? await remoteTranscriptPresence(sessionId, accountId, nodeId) : null
   })

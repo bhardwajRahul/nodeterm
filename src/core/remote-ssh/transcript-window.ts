@@ -1,4 +1,5 @@
 import { posixQuote } from '../../shared/ssh'
+import { CHAT_PAGE_MAX_BYTES } from '../../shared/chat-page'
 
 const BLOCK = 65536
 const STATUS = '\nNODETERM_READ_STATUS:0\n'
@@ -42,10 +43,17 @@ export function parseTranscriptWindow(stdout: string, cap: number): TranscriptWi
   if (![start, count, size].every(Number.isSafeInteger) || count > cap || start + count > size) {
     throw new Error('Invalid transcript read range')
   }
-  const encoded = stdout.slice(end + 1).replace(/\s/g, '')
+  const data = decodeFramedBlocks(stdout.slice(end + 1), start, count, cap)
+  return { data, start, newOffset: start + count, initial: !!initial }
+}
+
+/** Decode the base64 dd payload shared by both commands: verify the in-band dd status, then trim
+ *  the block alignment back to exactly `count` bytes from `start`. */
+function decodeFramedBlocks(payload: string, start: number, count: number, cap: number): Buffer {
+  const encoded = payload.replace(/\s/g, '')
   if (!count) {
     if (encoded) throw new Error('Unexpected transcript read payload')
-    return { data: Buffer.alloc(0), start, newOffset: start, initial: !!initial }
+    return Buffer.alloc(0)
   }
   const decoded = Buffer.from(encoded, 'base64')
   if (decoded.toString('base64') !== encoded || !decoded.subarray(-STATUS.length).equals(Buffer.from(STATUS))) {
@@ -54,5 +62,61 @@ export function parseTranscriptWindow(stdout: string, cap: number): TranscriptWi
   const bytes = decoded.subarray(0, -STATUS.length)
   const leading = start % BLOCK
   if (bytes.length < leading + count || bytes.length > cap + 2 * BLOCK) throw new Error('Short or oversized transcript read')
-  return { data: bytes.subarray(leading, leading + count), start, newOffset: start + count, initial: !!initial }
+  return bytes.subarray(leading, leading + count)
+}
+
+/**
+ * The ⌘M panel's PAGED read (`chat:read-transcript` with a page): at most `maxBytes` ending at
+ * byte offset `before` (`null`, or past EOF = the file size), plus ONE byte of lookbehind when the
+ * window does not start at 0 — `parseChatWindow` needs it to recognize a line that begins exactly
+ * on the window edge. One round trip answers the size too, which is what "the end of the file"
+ * means on the host.
+ *
+ * Same shape and guarantees as `transcriptWindowCommand` above (read-forward, for the context
+ * tail): one fd opened up front, the size snapshotted once, whole dd blocks read and trimmed by
+ * the parser, and the dd exit status carried INSIDE the base64 so a failed read cannot pass for a
+ * short one. Only integers we validated here and a `posixQuote`d path reach the line; the path is
+ * already jailed by `isSafeRemoteTranscriptPath` before any caller gets here.
+ */
+export function transcriptPageCommand(path: string, before: number | null, maxBytes: number): string {
+  if ((before !== null && (!Number.isSafeInteger(before) || before < 0)) ||
+      !Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > CHAT_PAGE_MAX_BYTES) {
+    throw new Error('Invalid transcript page bounds')
+  }
+  return `exec 3< ${posixQuote(path)} || exit 1
+size=$(wc -c < ${posixQuote(path)}) || exit 1
+size=$((size + 0))
+end=${before ?? -1}
+if [ "$end" -lt 0 ] || [ "$end" -gt "$size" ]; then end=$size; fi
+start=$((end > ${maxBytes} ? end - ${maxBytes} - 1 : 0))
+count=$((end - start))
+printf '%s %s %s\n' "$start" "$count" "$size"
+if [ "$count" -gt 0 ]; then
+  skip=$((start / ${BLOCK}))
+  blocks=$(((start % ${BLOCK} + count + ${BLOCK - 1}) / ${BLOCK}))
+  { dd bs=${BLOCK} skip="$skip" count="$blocks" <&3 2>/dev/null; result=$?; printf '\nNODETERM_READ_STATUS:%s\n' "$result"; } | base64
+fi`
+}
+
+export interface TranscriptPage {
+  /** Bytes `[start, end)` of the file — `start` includes the lookbehind byte, when there is one. */
+  data: Buffer
+  start: number
+  end: number
+  size: number
+}
+
+/** Strict parser for `transcriptPageCommand`'s reply: anything malformed, short or failed throws. */
+export function parseTranscriptPage(stdout: string, maxBytes: number): TranscriptPage {
+  const nl = stdout.indexOf('\n')
+  const match = /^(\d+) (\d+) (\d+)$/.exec(stdout.slice(0, nl))
+  if (!match) throw new Error('Invalid transcript page header')
+  const [start, count, size] = match.slice(1).map(Number)
+  // +1: the lookbehind byte rides on top of the window.
+  const cap = maxBytes + 1
+  if (![start, count, size].every(Number.isSafeInteger) || count > cap || start + count > size) {
+    throw new Error('Invalid transcript page range')
+  }
+  const data = decodeFramedBlocks(stdout.slice(nl + 1), start, count, cap)
+  return { data, start, end: start + count, size }
 }

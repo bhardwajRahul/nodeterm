@@ -10,6 +10,7 @@ import type { PaneOwner } from './agents/pane-owner-predicate'
 import type { AgentId, AgentPermissionMode, BuiltinAgentId, PromptInjectionMode } from './agents/config'
 import type { ControlConfirmWaivers } from './control-confirm'
 import type { AgentMessageDeliverRequest, AgentMessageReply } from './agents/agent-messaging'
+import type { ChatTranscriptPageRequest } from './chat-page'
 import type { BrowserLeasePush } from './browser-indicator'
 import type { GroupWorktree } from './worktree'
 import type { ClientId, DinoSnapshot, PeerDiff, PeerIdentity, PeerState } from './presence'
@@ -2768,12 +2769,35 @@ export interface TranscriptLine {
 export type ChatPart =
   | { kind: 'text'; text: string }
   | { kind: 'thinking'; text: string }
-  | { kind: 'tool'; name: string; arg: string; result?: string; summary?: ChatToolSummary }
+  | {
+      kind: 'tool'
+      name: string
+      arg: string
+      result?: string
+      summary?: ChatToolSummary
+      /** The transcript's `tool_use` id. Set only by a PAGED read (`ChatTranscriptResult.olderCursor`
+       *  present): a result carried across a page boundary (`unmatchedResults`) is attached by it. */
+      id?: string
+    }
 
 /** A structured chat message reconstructed from a Claude session transcript. */
 export interface ChatMessage {
   role: 'user' | 'assistant'
   parts: ChatPart[]
+  /**
+   * Stable identity for list rendering: the absolute byte offset of the transcript line this
+   * message came from. Set only by a PAGED claude read — an absolute offset does not change when
+   * an older page is prepended or the file grows, so a prepend does not re-key the list. Absent on
+   * the legacy read and on grok (whose reader does not page).
+   */
+  key?: number
+}
+
+/** A `tool_result` whose `tool_use` was not in the same page (it lives in an OLDER one). */
+export interface ChatCarriedToolResult {
+  /** The `tool_use_id` — matches `ChatPart.id` of a tool part in an older page. */
+  id: string
+  result: string
 }
 
 /** Edit/Write tool summary for diff-preview cards. */
@@ -2793,6 +2817,19 @@ export interface ChatToolSummary {
 export interface ChatTranscriptResult {
   messages: ChatMessage[]
   found: boolean
+  /**
+   * PAGED reads only (absent on the legacy unpaged read, which is unchanged byte for byte). The
+   * byte offset where this window's first complete line starts — pass it back as `page.before` to
+   * read the next OLDER window. `null` = this window reached the start of the file, or the reader
+   * does not page (grok).
+   */
+  olderCursor?: number | null
+  /**
+   * PAGED reads only. Tool results in this window whose `tool_use` is NOT in it: the newer page is
+   * read first, so its results precede their tools. Hold them and attach each to the tool part with
+   * the same `id` when an older page arrives. Always `[]` from a reader that does not page.
+   */
+  unmatchedResults?: ChatCarriedToolResult[]
 }
 
 /**
@@ -2818,13 +2855,19 @@ export interface ChatApi {
    * it was. It is NOT optional in spirit: without it a grok node falls into claude's resolver, whose
    * cwd fallback returns the newest CLAUDE transcript for that directory — someone else's
    * conversation. `CHAT_CAPABLE` decides who may ask; this decides who answers.
+   *
+   * `page` (optional, trailing) asks for ONE window instead of the whole 5 MB tail — see
+   * `shared/chat-page.ts`. Absent = the legacy read, byte for byte. Present = a result carrying
+   * `olderCursor`, per-message `key`s, tool-part `id`s and `unmatchedResults`. An invalid
+   * `before` rejects.
    */
   readTranscript(
     sessionId: string | undefined,
     cwd: string | undefined,
     accountId?: string,
     nodeId?: string,
-    agentId?: string
+    agentId?: string,
+    page?: ChatTranscriptPageRequest
   ): Promise<ChatTranscriptResult>
 
   /**

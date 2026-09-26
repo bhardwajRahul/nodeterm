@@ -113,6 +113,13 @@ export function ChatPanel({
   // The older-page fetch (scroll-up paging): its own in-flight flag and token, and a failed page
   // gets a retry row instead of retrying on every scroll event.
   const [olderState, setOlderState] = useState<'idle' | 'loading' | 'error'>('idle')
+  // A tail read in flight. Older paging waits for it: the tail can RESET the thread (see
+  // applyTail), and an older page fetched against the pre-reload cursor would be thrown away. State,
+  // not a ref, so the paging check re-runs when the tail lands.
+  const [tailLoading, setTailLoading] = useState(false)
+  // Mirror for `load`, which must not depend on it (its identity drives the initial-load effect).
+  const olderStateRef = useRef(olderState)
+  olderStateRef.current = olderState
   const [input, setInput] = useState('')
   const [readonly, setReadonly] = useState(false)
   const state = useAgentStatus((s) => s.byId[nodeId]?.state)
@@ -142,16 +149,22 @@ export function ChatPanel({
   // "Loading earlier messages…" row appearing); the layout effect shifts scrollTop by the height
   // that was added, so what the user is reading stays put.
   const anchorRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null)
+  // Never on a panel with no layout box (collapsed node, `display:none`): every metric is 0 there,
+  // and an "anchor" at 0 would pin the view to the top of whatever loads while hidden.
   const captureAnchor = () => {
     const el = msgsRef.current
-    if (el) anchorRef.current = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight }
+    if (el && el.clientHeight > 0) anchorRef.current = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight }
   }
 
   const load = useCallback(() => {
     const token = ++reqRef.current
     olderReqRef.current++
     olderInFlightRef.current = false
+    // Cancelling an older fetch (or clearing its error) removes a row ABOVE the viewport: anchor it
+    // like any other change up there, or the view jumps by the row's height.
+    if (olderStateRef.current !== 'idle') captureAnchor()
     setOlderState('idle')
+    setTailLoading(true)
     setLoadState((s) => (s === 'ok' ? s : 'loading')) // a reload never blanks a rendered thread
     // `nodeId` is what lets an SSH-project node resolve on its host; the rejection branch is what
     // keeps a surface that cannot read transcripts (Server Edition, relay tab) from silently
@@ -162,11 +175,17 @@ export function ChatPanel({
     }).then(
       (res) => {
         if (token !== reqRef.current) return
+        setTailLoading(false)
         if (!res.found) {
           // `missing` only when there is nothing of THIS transcript on screen. A reload that
           // failed to resolve (an SSH master blip) must not blank a thread the user is reading.
           const t = threadRef.current
-          if (t.identity === identity && t.messages.length > 0) return
+          if (t.identity === identity && t.messages.length > 0) {
+            // The thread on screen is still this transcript's: back to `ok`, or the `loading` this
+            // reload set would stick and silently disable older paging (it waits for `ok`).
+            setLoadState('ok')
+            return
+          }
           setThread(emptyThread(identity))
           setLoadState('missing')
           return
@@ -176,6 +195,13 @@ export function ChatPanel({
       },
       (e: unknown) => {
         if (token !== reqRef.current) return
+        setTailLoading(false)
+        // Same rule as a failed resolution: a rendered thread of this transcript stays usable.
+        const t = threadRef.current
+        if (t.identity === identity && t.messages.length > 0) {
+          setLoadState('ok')
+          return
+        }
         setLoadState(isUnsupported(e) ? 'unsupported' : 'error')
       }
     )
@@ -268,21 +294,44 @@ export function ChatPanel({
     if (
       shouldFetchOlder({
         scrollTop: el.scrollTop,
+        scrollHeight: el.scrollHeight,
+        clientHeight: el.clientHeight,
         olderCursor: thread.identity === identity ? thread.olderCursor : null,
-        inFlight: olderInFlightRef.current,
+        inFlight: olderInFlightRef.current || tailLoading,
         failed: olderState === 'error',
         loaded: loadState === 'ok'
       })
     ) {
       loadOlder()
     }
-  }, [thread.identity, thread.olderCursor, identity, olderState, loadState, loadOlder])
+  }, [thread.identity, thread.olderCursor, identity, olderState, loadState, tailLoading, loadOlder])
 
   // After every thread change too, not only on scroll: a thread shorter than the viewport cannot
   // scroll, so without this its older history would be unreachable.
   useEffect(() => {
     maybeLoadOlder()
   }, [maybeLoadOlder])
+
+  // The panel's box changing size — above all a collapsed node being EXPANDED (display:none → a
+  // real box). Nothing else re-runs the checks then: while hidden, follow and anchor had zero
+  // geometry to work with and paging was refused. So: a user who was following lands at the
+  // bottom, and paging resumes (a short thread fetches older right away). Guarded: jsdom and old
+  // engines have no ResizeObserver, and the panel works without it.
+  const maybeLoadOlderRef = useRef(maybeLoadOlder)
+  maybeLoadOlderRef.current = maybeLoadOlder
+  useEffect(() => {
+    const el = msgsRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    let hadBox = el.clientHeight > 0
+    const ro = new ResizeObserver(() => {
+      const hasBox = el.clientHeight > 0
+      if (hasBox && !hadBox && nearBottomRef.current) el.scrollTop = el.scrollHeight
+      hadBox = hasBox
+      maybeLoadOlderRef.current()
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
 
   const onScroll = () => {
     const el = msgsRef.current

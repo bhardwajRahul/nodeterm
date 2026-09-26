@@ -143,17 +143,45 @@ describe('anchoredScrollTop', () => {
 })
 
 describe('shouldFetchOlder', () => {
-  const base = { scrollTop: 10, olderCursor: 500 as number | null, inFlight: false, failed: false, loaded: true }
+  const base = {
+    scrollTop: 10,
+    scrollHeight: 3000,
+    clientHeight: 400,
+    olderCursor: 500 as number | null,
+    inFlight: false,
+    failed: false,
+    loaded: true
+  }
   it('fetches near the top when there is something older', () => {
     expect(shouldFetchOlder(base)).toBe(true)
+  })
+  it('fetches when the content is shorter than the viewport (it cannot scroll)', () => {
+    expect(shouldFetchOlder({ ...base, scrollTop: 0, scrollHeight: 300 })).toBe(true)
   })
   it.each([
     ['far from the top', { scrollTop: 5000 }],
     ['at the start of the file', { olderCursor: null }],
     ['one already in flight', { inFlight: true }],
     ['after a failure (the retry row owns it)', { failed: true }],
-    ['before the first read landed', { loaded: false }]
+    ['before the first read landed', { loaded: false }],
+    // A collapsed node keeps the panel mounted under display:none: every metric reads 0, which
+    // would otherwise look like "at the top" and page the WHOLE history in the background.
+    ['with no layout box (hidden panel)', { scrollTop: 0, scrollHeight: 0, clientHeight: 0 }]
   ])('does not fetch %s', (_label, over) => {
     expect(shouldFetchOlder({ ...base, ...over })).toBe(false)
+  })
+})
+
+describe('held results whose tool is already loaded are dropped', () => {
+  it('after a tail merge: the tool is on screen WITH a result, so nothing older can claim it', () => {
+    let t = applyTail(emptyThread('A'), 'A', page([tool(100, 't1', 'first'), say(160, 'x')], 90))
+    t = applyTail(t, 'A', page([say(160, 'x')], 140, [{ id: 't1', result: 'dup' }]))
+    expect(t.pending.has('t1')).toBe(false)
+    expect(texts(t)[0]).toBe('tool:t1:first')
+  })
+  it('after an older page', () => {
+    let t = applyTail(emptyThread('A'), 'A', page([say(200, 'x')], 180, [{ id: 't1', result: 'r' }]))
+    t = applyOlder(t, page([tool(100, 't1', 'own')], 90))
+    expect(t.pending.has('t1')).toBe(false)
   })
 })

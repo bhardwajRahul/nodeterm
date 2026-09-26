@@ -61,6 +61,14 @@ export function attachCarried(
   return { messages: out, pending: left }
 }
 
+/** Held results whose tool is ALREADY loaded can never be claimed (the tool has its own result —
+ *  `attachCarried` never overwrites one), so holding them until the start of the file is waste. */
+function pruneLoaded(messages: ChatMessage[], pending: Map<string, string>): Map<string, string> {
+  if (pending.size === 0) return pending
+  for (const m of messages) for (const p of m.parts) if (p.kind === 'tool' && p.id) pending.delete(p.id)
+  return pending
+}
+
 const carriedOf = (res: ChatTranscriptResult): Array<[string, string]> =>
   (res.unmatchedResults ?? []).map((r) => [r.id, r.result])
 
@@ -91,11 +99,12 @@ export function applyTail(t: ChatThread, identity: string, res: ChatTranscriptRe
   const kept = keyed.filter((m) => m.key! < cursor)
   // A result written this turn for a tool rendered from an earlier read arrives as carried.
   const attached = attachCarried(kept, new Map([...t.pending, ...carriedOf(res)]))
+  const messages = [...attached.messages, ...res.messages]
   return {
     identity,
-    messages: [...attached.messages, ...res.messages],
+    messages,
     olderCursor: t.olderCursor,
-    pending: t.olderCursor === null ? new Map() : attached.pending
+    pending: t.olderCursor === null ? new Map() : pruneLoaded(messages, attached.pending)
   }
 }
 
@@ -118,7 +127,7 @@ export function applyOlder(t: ChatThread, res: ChatTranscriptResult): ChatThread
     identity: t.identity,
     messages: [...attached.messages, ...t.messages],
     olderCursor: cursor,
-    pending: cursor === null ? new Map() : attached.pending
+    pending: cursor === null ? new Map() : pruneLoaded(attached.messages, attached.pending)
   }
 }
 
@@ -128,14 +137,28 @@ export function anchoredScrollTop(prev: { scrollTop: number; scrollHeight: numbe
   return prev.scrollTop + (nextScrollHeight - prev.scrollHeight)
 }
 
-/** Fetch the next older page? Only near the top, only when there is one, one at a time, never on
- *  its own after a failure (the retry row owns that), and never before the first read landed. */
+/**
+ * Fetch the next older page? Only near the top — or when the content is shorter than the viewport
+ * (it cannot scroll, so "near the top" would never be reached by a user) — only when there is one,
+ * one at a time, never on its own after a failure (the retry row owns that), and never before the
+ * first read landed.
+ *
+ * And never WITHOUT A LAYOUT BOX: a collapsed node keeps its ⌘M panel mounted under
+ * `display:none`, where scrollTop, scrollHeight and clientHeight all read 0. Zero looks exactly
+ * like "at the top", and every page landing re-triggers the check — so an ungated hidden panel
+ * paged the whole history in the background (one ssh read per page on an SSH project). Paging
+ * resumes when the panel gets a size again.
+ */
 export function shouldFetchOlder(s: {
   scrollTop: number
+  scrollHeight: number
+  clientHeight: number
   olderCursor: number | null
   inFlight: boolean
   failed: boolean
   loaded: boolean
 }, threshold = CHAT_OLDER_FETCH_THRESHOLD_PX): boolean {
-  return s.loaded && !s.inFlight && !s.failed && s.olderCursor !== null && s.scrollTop <= threshold
+  if (!s.loaded || s.inFlight || s.failed || s.olderCursor === null) return false
+  if (s.clientHeight <= 0) return false
+  return s.scrollHeight <= s.clientHeight || s.scrollTop <= threshold
 }

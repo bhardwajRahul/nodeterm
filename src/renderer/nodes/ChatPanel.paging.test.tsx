@@ -72,11 +72,32 @@ function installGeometry(el: HTMLElement): void {
   })
 }
 
-async function render(): Promise<void> {
+async function render(sessionId = 's1'): Promise<void> {
+  const first = !host.querySelector('.term-chat__msgs')
   await act(async () => {
-    root.render(<ChatPanel nodeId={NODE} sessionId="s1" agentId="claude" />)
+    root.render(<ChatPanel nodeId={NODE} sessionId={sessionId} agentId="claude" />)
   })
-  installGeometry(msgs())
+  if (first) installGeometry(msgs())
+}
+
+/** jsdom has no ResizeObserver; this one lets a test say "the panel's box changed". */
+const observers: Array<() => void> = []
+class FakeResizeObserver {
+  constructor(private cb: () => void) {}
+  observe(): void {
+    observers.push(this.cb)
+  }
+  unobserve(): void {}
+  disconnect(): void {
+    const i = observers.indexOf(this.cb)
+    if (i >= 0) observers.splice(i, 1)
+  }
+}
+;(globalThis as { ResizeObserver?: unknown }).ResizeObserver = FakeResizeObserver
+async function resized(): Promise<void> {
+  await act(async () => {
+    for (const cb of [...observers]) cb()
+  })
 }
 async function settle(i: number, r: Partial<ChatTranscriptResult>): Promise<void> {
   await act(async () => {
@@ -93,6 +114,7 @@ async function scrollTo(top: number): Promise<void> {
 beforeEach(() => {
   readTranscript.mockClear()
   pending.length = 0
+  observers.length = 0
   geo.perMsg = 700
   geo.clientHeight = 400
   host = document.createElement('div')
@@ -221,5 +243,81 @@ describe('ChatPanel progressive loading', () => {
     await settle(0, { messages: [say(1000, 'short')], olderCursor: 1000 })
     expect(pending).toHaveLength(2)
     expect(pending[1].page).toEqual({ before: 1000, maxBytes: CHAT_OLDER_PAGE_BYTES })
+  })
+
+  it('a HIDDEN panel (collapsed node, display:none: every metric 0) never pages in the background', async () => {
+    geo.perMsg = 0
+    geo.clientHeight = 0
+    await render()
+    await settle(0, { messages: [say(1000, 'tail')], olderCursor: 1000 })
+    expect(pending).toHaveLength(1)
+    await scrollTo(0)
+    expect(pending).toHaveLength(1)
+
+    // Expanded: the box gets a size. The view lands at the bottom, far from the top — no fetch.
+    geo.perMsg = 1000
+    geo.clientHeight = 400
+    await resized()
+    expect(msgs().scrollTop).toBe(600)
+    expect(pending).toHaveLength(1)
+    // …and paging works normally from there.
+    await scrollTo(0)
+    expect(pending).toHaveLength(2)
+  })
+
+  it('a panel revealed with a SHORT thread pages back as soon as it has a size', async () => {
+    geo.perMsg = 0
+    geo.clientHeight = 0
+    await render()
+    await settle(0, { messages: [say(1000, 'tail')], olderCursor: 1000 })
+    expect(pending).toHaveLength(1)
+    geo.perMsg = 100
+    geo.clientHeight = 400
+    await resized()
+    expect(pending).toHaveLength(2)
+  })
+
+  it('paging survives a rejected reload followed by a reload that finds nothing', async () => {
+    geo.perMsg = 1000
+    await render()
+    await settle(0, { messages: [say(1000, 'tail')], olderCursor: 1000 })
+    const refresh = () => host.querySelector<HTMLButtonElement>('.term-chat__refresh')!.click()
+    await act(async () => refresh())
+    await act(async () => pending[1].reject(new Error('socket blip')))
+    await act(async () => refresh())
+    await settle(2, { found: false })
+    expect(bubbles()).toEqual(['tail'])
+    await scrollTo(0)
+    expect(pending).toHaveLength(4)
+    expect(pending[3].page).toEqual({ before: 1000, maxBytes: CHAT_OLDER_PAGE_BYTES })
+  })
+
+  it('switching session while an older page is in flight drops that page and starts clean', async () => {
+    geo.perMsg = 1000
+    await render('s1')
+    await settle(0, { messages: [say(1000, 'OLD tail')], olderCursor: 1000 })
+    await scrollTo(0)
+    expect(pending).toHaveLength(2)
+    await render('s2')
+    expect(pending).toHaveLength(3)
+    await settle(1, { messages: [say(0, 'OLD older')], olderCursor: null })
+    await settle(2, { messages: [say(1000, 'NEW tail')], olderCursor: null })
+    expect(bubbles()).toEqual(['NEW tail'])
+  })
+
+  it('a reload that cancels an in-flight older fetch removes its row WITHOUT a jump', async () => {
+    geo.perMsg = 1000
+    await render()
+    await settle(0, { messages: [say(1000, 'tail')], olderCursor: 1000 })
+    await scrollTo(50)
+    expect(msgs().scrollTop).toBe(50 + ROW) // the loading row appeared above
+    await act(async () => host.querySelector<HTMLButtonElement>('.term-chat__refresh')!.click())
+    expect(host.querySelector('.term-chat__older')).toBeNull()
+    expect(msgs().scrollTop).toBe(50) // and went away again: same content under the viewport
+    // Paging waits for the tail, then resumes (the user is still at the top).
+    expect(pending).toHaveLength(3)
+    await settle(2, { messages: [say(1000, 'tail')], olderCursor: 1000 })
+    expect(pending).toHaveLength(4)
+    expect(pending[3].page).toEqual({ before: 1000, maxBytes: CHAT_OLDER_PAGE_BYTES })
   })
 })

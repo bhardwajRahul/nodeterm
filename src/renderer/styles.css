@@ -3328,6 +3328,16 @@ body,
   font-size: 12px;
   color: rgba(var(--tint-rgb), 0.45);
 }
+/* The ⌘M chat panel's live-progress row, closing the thread while the agent works (or waits for
+   an answer in the terminal). Left-aligned under the last message, unlike the centred loading row. */
+.term-chat__activity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 4px;
+  font-size: 12px;
+  color: rgba(var(--tint-rgb), 0.55);
+}
 /* The ⌘M output view's initial "Capturing…" placeholder, spinner beside the text. */
 .term-md__capturing {
   display: inline-flex;

@@ -350,3 +350,40 @@ describe('the verified evidence for a transition', () => {
     }
   })
 })
+
+describe('onHookEvent — a per-node pulse for EVERY hook event, same-state ones included', () => {
+  it('a same-state event notifies no zustand subscriber (the in-place fast path) — which is why the pulse exists', () => {
+    const id = nid()
+    useAgentStatus.getState().setState(id, 'working', 'claude', true)
+    const sub = vi.fn()
+    const unsub = useAgentStatus.subscribe(sub)
+    useAgentStatus.getState().setState(id, 'working', 'claude')
+    expect(sub).not.toHaveBeenCalled()
+    unsub()
+  })
+
+  it('fires for transitions and same-state events of that node only, and unsubscribes', () => {
+    const id = nid()
+    const other = nid()
+    const cb = vi.fn()
+    const unsub = useAgentStatus.getState().onHookEvent(id, cb)
+    useAgentStatus.getState().setState(id, 'working', 'claude', true)
+    useAgentStatus.getState().setState(id, 'working', 'claude')
+    useAgentStatus.getState().setState(other, 'working', 'claude', true)
+    expect(cb).toHaveBeenCalledTimes(2)
+    unsub()
+    useAgentStatus.getState().setState(id, 'done', 'claude')
+    expect(cb).toHaveBeenCalledTimes(2)
+  })
+
+  it('sees the store already updated when it fires', () => {
+    const id = nid()
+    let seen: string | undefined
+    const unsub = useAgentStatus.getState().onHookEvent(id, () => {
+      seen = useAgentStatus.getState().byId[id]?.state
+    })
+    useAgentStatus.getState().setState(id, 'working', 'claude', true)
+    expect(seen).toBe('working')
+    unsub()
+  })
+})

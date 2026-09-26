@@ -19,6 +19,7 @@ import {
 } from '../lib/chatPaging'
 import { E_UNSUPPORTED } from '@shared/rpc'
 import { Spinner } from '../components/Spinner'
+import { CHAT_OPTIMISTIC_WORKING_MS, chatActivity, planLiveReload } from '../lib/chatLive'
 import { ChatLoadingStatus } from './ChatPanelFallback'
 
 // Memoized bubble: marked+DOMPurify re-ran for EVERY message on each ChatPanel render (each
@@ -86,8 +87,9 @@ const EMPTY_TEXT: Record<LoadState, { title: string; detail?: string }> = {
 /**
  * Chat view for a chat-capable agent node (Cmd+M). Renders the session transcript as
  * markdown bubbles with collapsible tool calls, and sends new prompts into the running tmux
- * session via pty.sendText. Phase 1 reloads the transcript whenever a turn finishes
- * (working -> idle); live streaming is a later phase. Replaces the markdown-of-output overlay.
+ * session via pty.sendText. While a turn runs, a status row closes the thread and the tail is
+ * re-read (throttled) on every hook event, so the answer grows as it is written; the turn's end
+ * (working -> idle) takes one final reload. Replaces the markdown-of-output overlay.
  */
 export function ChatPanel({
   nodeId,
@@ -124,6 +126,7 @@ export function ChatPanel({
   olderStateRef.current = olderState
   const [input, setInput] = useState('')
   const [readonly, setReadonly] = useState(false)
+  const [optimistic, setOptimistic] = useState(false)
   const state = useAgentStatus((s) => s.byId[nodeId]?.state)
   // The shell-owned-pane flags, each as its own primitive selector (an object selector would
   // re-render on every hook event for every node). See lib/chatSendGate.ts for why they gate.
@@ -132,6 +135,14 @@ export function ChatPanel({
   const dropped = useAgentStatus((s) => s.byId[nodeId]?.dropped)
   const sessionEnded = useAgentStatus((s) => s.byId[nodeId]?.sessionEnded)
   const customAgents = useSettings((s) => s.settings.customAgents)
+  // Not just `working`: a TUI dialog (`waiting`/`blocked`) would be ANSWERED by sendText's Enter,
+  // and a pane whose CLI is gone (hibernated/paused/dropped/exited) is a SHELL that would execute it.
+  const refusal = chatSendRefusal(agentId, { state, hibernated, paused, dropped, sessionEnded })
+  const agentLabel = chatAgentLabel(agentId, customAgents)
+  // What the row closing the thread says (lib/chatLive.ts). `optimistic` covers the gap between a
+  // send and the first hook event: set by `send`, retired by the next state change (the real state
+  // takes over) or, for an agent whose hooks never report, after a bounded timeout.
+  const activity = chatActivity({ refusal, optimistic, readOnly: !!readOnly })
   const msgsRef = useRef<HTMLDivElement>(null)
   const prevState = useRef(state)
   // Request token: only the NEWEST readTranscript may land. An older read resolving late (the
@@ -157,6 +168,19 @@ export function ChatPanel({
     const el = msgsRef.current
     if (el && el.clientHeight > 0) anchorRef.current = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight }
   }
+  // Live refresh bookkeeping (lib/chatLive.ts `planLiveReload`). Refs, not state: none of it is
+  // rendered, and a hook event must not re-render the panel just to note that it arrived.
+  // - a TAIL read is in flight (any: initial, ↻, turn-end or live) — live reads never overlap one
+  //   (nor an older-page fetch, `olderInFlightRef`);
+  // - when the last tail read started — the throttle's clock;
+  // - a hook event not yet served by a read — the trailing call, retried on settle / timer /
+  //   reveal / visibilitychange;
+  // - the trailing timer.
+  const tailInFlightRef = useRef(false)
+  const lastTailStartRef = useRef<number | null>(null)
+  const livePendingRef = useRef(false)
+  const liveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const attemptLiveRef = useRef<() => void>(() => {})
 
   const load = useCallback(() => {
     const token = ++reqRef.current
@@ -167,6 +191,8 @@ export function ChatPanel({
     if (olderStateRef.current !== 'idle') captureAnchor()
     setOlderState('idle')
     setTailLoading(true)
+    tailInFlightRef.current = true
+    lastTailStartRef.current = Date.now()
     setLoadState((s) => (s === 'ok' ? s : 'loading')) // a reload never blanks a rendered thread
     // `nodeId` is what lets an SSH-project node resolve on its host; the rejection branch is what
     // keeps a surface that cannot read transcripts (Server Edition, relay tab) from silently
@@ -178,6 +204,9 @@ export function ChatPanel({
       (res) => {
         if (token !== reqRef.current) return
         setTailLoading(false)
+        tailInFlightRef.current = false
+        // A hook event held while this read was in flight gets its (trailing) read now.
+        queueMicrotask(() => attemptLiveRef.current())
         if (!res.found) {
           // `missing` only when there is nothing of THIS transcript on screen. A reload that
           // failed to resolve (an SSH master blip) must not blank a thread the user is reading.
@@ -198,6 +227,8 @@ export function ChatPanel({
       (e: unknown) => {
         if (token !== reqRef.current) return
         setTailLoading(false)
+        tailInFlightRef.current = false
+        queueMicrotask(() => attemptLiveRef.current())
         // Same rule as a failed resolution: a rendered thread of this transcript stays usable.
         const t = threadRef.current
         if (t.identity === identity && t.messages.length > 0) {
@@ -224,6 +255,8 @@ export function ChatPanel({
     setOlderState('loading')
     const settle = () => {
       olderInFlightRef.current = false
+      // A hook event held behind this page gets its (trailing) tail read now.
+      queueMicrotask(() => attemptLiveRef.current())
     }
     void api.chat.readTranscript(sessionId, cwd, accountId, nodeId, agentId, {
       before,
@@ -259,9 +292,68 @@ export function ChatPanel({
     () => () => {
       reqRef.current++
       olderReqRef.current++
+      livePendingRef.current = false
+      attemptLiveRef.current = () => {}
+      if (liveTimerRef.current !== null) clearTimeout(liveTimerRef.current)
+      liveTimerRef.current = null
     },
     []
   )
+
+  // Serve a pending hook event if the plan allows it now; otherwise leave it pending for whichever
+  // retry the plan waits on. Everything is read at call time (store, geometry, visibility): it
+  // runs from timers and settles, long after the render that defined it.
+  attemptLiveRef.current = () => {
+    if (!livePendingRef.current) return
+    const el = msgsRef.current
+    const plan = planLiveReload({
+      working: useAgentStatus.getState().byId[nodeId]?.state === 'working',
+      // No layout box (collapsed node, display:none) = the paging gate; a hidden document too.
+      visible: !!el && el.clientHeight > 0 && !document.hidden,
+      // An older page in flight counts too: `load` cancels it, and a live read every interval
+      // would keep restarting the user's scroll-up paging for the whole turn.
+      inFlight: tailInFlightRef.current || olderInFlightRef.current,
+      now: Date.now(),
+      lastStartAt: lastTailStartRef.current
+    })
+    switch (plan.kind) {
+      case 'skip':
+        livePendingRef.current = false
+        return
+      case 'hold':
+        return
+      case 'wait':
+        if (liveTimerRef.current === null) {
+          liveTimerRef.current = setTimeout(() => {
+            liveTimerRef.current = null
+            attemptLiveRef.current()
+          }, plan.ms)
+        }
+        return
+      case 'run':
+        livePendingRef.current = false
+        load()
+    }
+  }
+
+  // Every hook event for this node — same-state ones included, which no zustand selector sees (the
+  // store refreshes `stateAt` in place without notifying; see `onHookEvent`). While the agent is
+  // working each one may have written to the transcript, so each asks for a tail refresh.
+  useEffect(
+    () =>
+      useAgentStatus.getState().onHookEvent(nodeId, () => {
+        livePendingRef.current = true
+        attemptLiveRef.current()
+      }),
+    [nodeId]
+  )
+
+  // A tab that comes back into view serves what was held while it was hidden.
+  useEffect(() => {
+    const onVisibility = () => attemptLiveRef.current()
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => document.removeEventListener('visibilitychange', onVisibility)
+  }, [])
 
   // Reload when a turn completes (working -> not working). Sessions whose hooks never report
   // `working` never take this path — the bar's ↻ is their reload.
@@ -269,6 +361,16 @@ export function ChatPanel({
     if (prevState.current === 'working' && state !== 'working') load()
     prevState.current = state
   }, [state, load])
+
+  // Any state change retires the optimistic working row: from here the real state speaks.
+  useEffect(() => {
+    setOptimistic(false)
+  }, [state])
+  useEffect(() => {
+    if (!optimistic) return
+    const t = setTimeout(() => setOptimistic(false), CHAT_OPTIMISTIC_WORKING_MS)
+    return () => clearTimeout(t)
+  }, [optimistic])
 
   // Follow the newest message only when the user was already at the bottom or just sent; a user
   // scrolled up reading an earlier answer keeps their place. Layout effect: the jump lands before
@@ -291,7 +393,8 @@ export function ChatPanel({
       nearBottomRef.current = true
     }
     justSentRef.current = false
-  }, [messages, olderState])
+    // `activity`: the status row appearing at the end grows the thread like a message does.
+  }, [messages, olderState, activity])
 
   const maybeLoadOlder = useCallback(() => {
     const el = msgsRef.current
@@ -333,6 +436,7 @@ export function ChatPanel({
       if (hasBox && !hadBox && nearBottomRef.current) el.scrollTop = el.scrollHeight
       hadBox = hasBox
       maybeLoadOlderRef.current()
+      attemptLiveRef.current() // a hook event held while the panel was hidden
     })
     ro.observe(el)
     return () => ro.disconnect()
@@ -343,11 +447,6 @@ export function ChatPanel({
     if (el) nearBottomRef.current = isNearBottom(el)
     maybeLoadOlder()
   }
-
-  // Not just `working`: a TUI dialog (`waiting`/`blocked`) would be ANSWERED by sendText's Enter,
-  // and a pane whose CLI is gone (hibernated/paused/dropped/exited) is a SHELL that would execute it.
-  const refusal = chatSendRefusal(agentId, { state, hibernated, paused, dropped, sessionEnded })
-  const agentLabel = chatAgentLabel(agentId, customAgents)
 
   const send = useCallback(async () => {
     const text = input.trim()
@@ -367,6 +466,7 @@ export function ChatPanel({
     // Optimistic: show the prompt immediately; the next load() reconciles from the transcript.
     justSentRef.current = true
     setThread((t) => ({ ...t, messages: [...t.messages, { role: 'user', parts: [{ kind: 'text', text }] }] }))
+    setOptimistic(true)
     setInput('')
   }, [api, input, nodeId, agentId])
 
@@ -482,6 +582,15 @@ export function ChatPanel({
             )}
           </div>
         ))}
+        {activity && (
+          // One live region for both sentences, so working → waiting changes its text instead of
+          // remounting it (a remounted role=status is announced again). The words are the
+          // composer placeholder's own (`chatComposerPlaceholder`), so the two never disagree.
+          <div className="term-chat__activity" role="status" aria-live="polite">
+            {activity === 'working' && <Spinner />}
+            {chatComposerPlaceholder({ readonly: false, refusal: activity, agentLabel, chip: mdChip })}
+          </div>
+        )}
       </div>
       {!readOnly && (
       <div className="term-chat__compose">

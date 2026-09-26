@@ -2822,6 +2822,10 @@ export interface ChatTranscriptResult {
    * byte offset where this window's first complete line starts — pass it back as `page.before` to
    * read the next OLDER window. `null` = this window reached the start of the file, or the reader
    * does not page (grok).
+   *
+   * `found: false` on a read WITH `page.before` set is a FAILED OLDER-PAGE load (the host blipped,
+   * the file became unreadable), NOT a missing transcript: the caller keeps what it rendered and
+   * offers a retry. Only the first (tail) read's `found: false` means "no transcript".
    */
   olderCursor?: number | null
   /**

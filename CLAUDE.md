@@ -2395,6 +2395,21 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   disk), and it is tested under a real `/bin/sh` (`transcript-page.realsh.test.ts`). **Grok does not
   page**: a paged request gets its whole capped read with `olderCursor: null` and no keys.
   Server Edition passes `page` through ws-bridge to the same core handler; relay still refuses.
+  **ChatPanel consumes it progressively** (pure state in `renderer/lib/chatPaging.ts`): the first
+  read is a 256 KB tail (`CHAT_TAIL_PAGE_BYTES`, with a "Loading conversation…" row), older 512 KB
+  pages load when the user scrolls within 200 px of the top (or by themselves while the thread is
+  shorter than the viewport — it cannot scroll), one at a time behind their own token, prepended
+  with the scroll position ANCHORED on the scrollHeight delta (the loading row's own appearance
+  included). A turn-end reload / ↻ re-reads only the tail and **merges by key**, keeping the older
+  pages already loaded — unless no rendered message reaches into the new window (the turn wrote
+  more than a whole window, so the bytes in between were never read): then it RESETS to the tail
+  rather than stitch over a hole. Carried tool results are held until their tool's page arrives and
+  dropped at the start of the file. `found:false` on an OLDER page is a failed page load (retry row,
+  thread kept), not a missing transcript; a reload that fails to resolve never blanks a rendered
+  thread — only a read with nothing on screen says "No transcript found". The remote leg's
+  forget-a-located-ref rule lives in `main/remote-transcript-page.ts` (a hook-fed ref is never
+  dropped on a failed read, and a hook event re-marks a located ref as hook-fed). Grok: one
+  unkeyed read, no older pages, no "Beginning of conversation" marker (a capped read cannot know).
   **The composer sends only in `done` or an unknown state** (`canSendFromChat`,
   `renderer/lib/chatSendGate.ts`) — never in `waiting`/`blocked`, not just never in `working`:
   PermissionRequest and AskUserQuestion both normalize to `waiting`, the pane then holds a TUI

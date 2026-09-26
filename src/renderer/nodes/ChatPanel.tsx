@@ -3,11 +3,20 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { renderMarkdown } from '../lib/markdown'
 import { useAgentStatus } from '../state/agentStatus'
 import { useSession } from '../session/session'
-import type { ChatMessage } from '@shared/types'
 import { chipFor } from '../lib/keybindingOverrides'
 import { chatComposerPlaceholder, chatSendRefusal } from '../lib/chatSendGate'
 import { chatAgentLabel, chatKeyAction, isNearBottom, shouldFollowOnLoad } from '../lib/chatPanel'
 import { useSettings } from '../state/settings'
+import {
+  CHAT_OLDER_PAGE_BYTES,
+  CHAT_TAIL_PAGE_BYTES,
+  anchoredScrollTop,
+  applyOlder,
+  applyTail,
+  emptyThread,
+  shouldFetchOlder,
+  type ChatThread
+} from '../lib/chatPaging'
 import { E_UNSUPPORTED } from '@shared/rpc'
 
 // Memoized bubble: marked+DOMPurify re-ran for EVERY message on each ChatPanel render (each
@@ -91,8 +100,19 @@ export function ChatPanel({
   // This node's core api (stable for the session — the chat transcript and the tmux session
   // both live on the core this panel's project belongs to).
   const { api } = useSession()
-  const [messages, setMessages] = useState<ChatMessage[]>([])
+  // Which transcript this panel reads. Keys are byte offsets into ONE file, so a thread is only
+  // ever merged with a read of the same identity (see lib/chatPaging.ts).
+  const identity = JSON.stringify([nodeId, sessionId ?? null, cwd ?? null, accountId ?? null, agentId])
+  const [thread, setThread] = useState<ChatThread>(() => emptyThread(identity))
+  const messages = thread.messages
+  // Read by the async handlers, which must decide against the thread as it is NOW, not as it was
+  // when the read was issued.
+  const threadRef = useRef(thread)
+  threadRef.current = thread
   const [loadState, setLoadState] = useState<LoadState>('loading')
+  // The older-page fetch (scroll-up paging): its own in-flight flag and token, and a failed page
+  // gets a retry row instead of retrying on every scroll event.
+  const [olderState, setOlderState] = useState<'idle' | 'loading' | 'error'>('idle')
   const [input, setInput] = useState('')
   const [readonly, setReadonly] = useState(false)
   const state = useAgentStatus((s) => s.byId[nodeId]?.state)
@@ -114,25 +134,89 @@ export function ChatPanel({
   // bottom (updated on every scroll), and did they just send (they expect to see it land).
   const nearBottomRef = useRef(true)
   const justSentRef = useRef(false)
+  // Token for the older-page fetch. A TAIL load bumps it too: a tail read can reset the thread
+  // (see applyTail), and an older page computed against the previous cursor must not land on it.
+  const olderReqRef = useRef(0)
+  const olderInFlightRef = useRef(false)
+  // Geometry captured just BEFORE content is inserted above the viewport (an older page, or the
+  // "Loading earlier messages…" row appearing); the layout effect shifts scrollTop by the height
+  // that was added, so what the user is reading stays put.
+  const anchorRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null)
+  const captureAnchor = () => {
+    const el = msgsRef.current
+    if (el) anchorRef.current = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight }
+  }
 
   const load = useCallback(() => {
     const token = ++reqRef.current
+    olderReqRef.current++
+    olderInFlightRef.current = false
+    setOlderState('idle')
     setLoadState((s) => (s === 'ok' ? s : 'loading')) // a reload never blanks a rendered thread
     // `nodeId` is what lets an SSH-project node resolve on its host; the rejection branch is what
     // keeps a surface that cannot read transcripts (Server Edition, relay tab) from silently
-    // presenting itself as an empty conversation.
-    void api.chat.readTranscript(sessionId, cwd, accountId, nodeId, agentId).then(
+    // presenting itself as an empty conversation. Only the newest TAIL window is read — older
+    // history pages in on scroll-up, and a reload merges by key instead of discarding it.
+    void api.chat.readTranscript(sessionId, cwd, accountId, nodeId, agentId, {
+      maxBytes: CHAT_TAIL_PAGE_BYTES
+    }).then(
       (res) => {
         if (token !== reqRef.current) return
-        setMessages(res.messages)
-        setLoadState(res.found ? 'ok' : 'missing')
+        if (!res.found) {
+          // `missing` only when there is nothing of THIS transcript on screen. A reload that
+          // failed to resolve (an SSH master blip) must not blank a thread the user is reading.
+          const t = threadRef.current
+          if (t.identity === identity && t.messages.length > 0) return
+          setThread(emptyThread(identity))
+          setLoadState('missing')
+          return
+        }
+        setThread((t) => applyTail(t, identity, res))
+        setLoadState('ok')
       },
       (e: unknown) => {
         if (token !== reqRef.current) return
         setLoadState(isUnsupported(e) ? 'unsupported' : 'error')
       }
     )
-  }, [api, sessionId, cwd, accountId, nodeId, agentId])
+  }, [api, sessionId, cwd, accountId, nodeId, agentId, identity])
+
+  // Fetch the next OLDER page and prepend it. One in flight at a time; a result that arrives
+  // after a newer tail load (or unmount) is dropped by its token. A `found:false` here is a failed
+  // older-page load, NOT a missing transcript: the rendered thread stays, and a retry row appears.
+  const loadOlder = useCallback(() => {
+    const before = thread.olderCursor
+    if (before === null || olderInFlightRef.current || thread.identity !== identity) return
+    const token = ++olderReqRef.current
+    olderInFlightRef.current = true
+    captureAnchor()
+    setOlderState('loading')
+    const settle = () => {
+      olderInFlightRef.current = false
+    }
+    void api.chat.readTranscript(sessionId, cwd, accountId, nodeId, agentId, {
+      before,
+      maxBytes: CHAT_OLDER_PAGE_BYTES
+    }).then(
+      (res) => {
+        if (token !== olderReqRef.current) return
+        settle()
+        captureAnchor()
+        if (!res.found) {
+          setOlderState('error')
+          return
+        }
+        setThread((t) => (t.identity === identity && t.olderCursor === before ? applyOlder(t, res) : t))
+        setOlderState('idle')
+      },
+      () => {
+        if (token !== olderReqRef.current) return
+        settle()
+        captureAnchor()
+        setOlderState('error')
+      }
+    )
+  }, [api, sessionId, cwd, accountId, nodeId, agentId, identity, thread.olderCursor, thread.identity])
 
   // Initial load.
   useEffect(() => {
@@ -143,6 +227,7 @@ export function ChatPanel({
   useEffect(
     () => () => {
       reqRef.current++
+      olderReqRef.current++
     },
     []
   )
@@ -157,19 +242,52 @@ export function ChatPanel({
   // Follow the newest message only when the user was already at the bottom or just sent; a user
   // scrolled up reading an earlier answer keeps their place. Layout effect: the jump lands before
   // paint, so a followed thread never flashes one frame short.
+  //
+  // Content inserted ABOVE the viewport (an older page, the loading row) is the other case: there
+  // the anchor captured before the change wins, and the view is shifted by exactly the added
+  // height — no jump, and no follow (the user is at the top, reading history).
   useLayoutEffect(() => {
     const el = msgsRef.current
     if (!el) return
+    const anchor = anchorRef.current
+    if (anchor) {
+      anchorRef.current = null
+      el.scrollTop = anchoredScrollTop(anchor, el.scrollHeight)
+      return
+    }
     if (shouldFollowOnLoad({ wasNearBottom: nearBottomRef.current, justSent: justSentRef.current })) {
       el.scrollTop = el.scrollHeight
       nearBottomRef.current = true
     }
     justSentRef.current = false
-  }, [messages])
+  }, [messages, olderState])
+
+  const maybeLoadOlder = useCallback(() => {
+    const el = msgsRef.current
+    if (!el) return
+    if (
+      shouldFetchOlder({
+        scrollTop: el.scrollTop,
+        olderCursor: thread.identity === identity ? thread.olderCursor : null,
+        inFlight: olderInFlightRef.current,
+        failed: olderState === 'error',
+        loaded: loadState === 'ok'
+      })
+    ) {
+      loadOlder()
+    }
+  }, [thread.identity, thread.olderCursor, identity, olderState, loadState, loadOlder])
+
+  // After every thread change too, not only on scroll: a thread shorter than the viewport cannot
+  // scroll, so without this its older history would be unreachable.
+  useEffect(() => {
+    maybeLoadOlder()
+  }, [maybeLoadOlder])
 
   const onScroll = () => {
     const el = msgsRef.current
     if (el) nearBottomRef.current = isNearBottom(el)
+    maybeLoadOlder()
   }
 
   // Not just `working`: a TUI dialog (`waiting`/`blocked`) would be ANSWERED by sendText's Enter,
@@ -194,7 +312,7 @@ export function ChatPanel({
     }
     // Optimistic: show the prompt immediately; the next load() reconciles from the transcript.
     justSentRef.current = true
-    setMessages((m) => [...m, { role: 'user', parts: [{ kind: 'text', text }] }])
+    setThread((t) => ({ ...t, messages: [...t.messages, { role: 'user', parts: [{ kind: 'text', text }] }] }))
     setInput('')
   }, [api, input, nodeId, agentId])
 
@@ -231,6 +349,31 @@ export function ChatPanel({
         </span>
       </div>
       <div className="term-chat__msgs" ref={msgsRef} onScroll={onScroll}>
+        {messages.length === 0 && loadState === 'loading' && (
+          <div className="term-chat__loading" role="status">
+            <span className="term-chat__spinner" aria-hidden="true" />
+            <span>{EMPTY_TEXT.loading.title}</span>
+          </div>
+        )}
+        {messages.length > 0 && olderState === 'loading' && (
+          <div className="term-chat__older" role="status">
+            <span className="term-chat__spinner" aria-hidden="true" />
+            <span>Loading earlier messages…</span>
+          </div>
+        )}
+        {messages.length > 0 && olderState === 'error' && (
+          <div className="term-chat__older term-chat__older--error">
+            <span>Couldn't load earlier messages.</span>
+            <button className="term-chat__retry" onClick={loadOlder}>
+              Retry
+            </button>
+          </div>
+        )}
+        {/* Only a PAGED thread (keyed messages) can know it reached the start; grok's capped
+            whole-file read says nothing about what lies before it. */}
+        {olderState === 'idle' && thread.olderCursor === null && messages.some((m) => m.key !== undefined) && (
+          <div className="term-chat__older term-chat__older--start">Beginning of conversation</div>
+        )}
         {messages.length === 0 && loadState !== 'loading' && (
           <div className="term-chat__empty">
             <div>{EMPTY_TEXT[loadState].title}</div>
@@ -245,7 +388,10 @@ export function ChatPanel({
           </div>
         )}
         {messages.map((m, i) => (
-          <div key={i} className={`term-chat__msg term-chat__msg--${m.role}`}>
+          // Keyed by the source line's byte offset: a prepended page does not re-key (and so does
+          // not re-render) a single existing bubble. Unkeyed ones (grok, the optimistic sent
+          // bubble) fall back to their position.
+          <div key={m.key !== undefined ? `k${m.key}` : `i${i}`} className={`term-chat__msg term-chat__msg--${m.role}`}>
             {m.parts.map((p, j) =>
               p.kind === 'text' ? (
                 <MarkdownText key={j} text={p.text} />

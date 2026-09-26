@@ -2415,6 +2415,17 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   forget-a-located-ref rule lives in `main/remote-transcript-page.ts` (a hook-fed ref is never
   dropped on a failed read, and a hook event re-marks a located ref as hook-fed). Grok: one
   unkeyed read, no older pages, no "Beginning of conversation" marker (a capped read cannot know).
+  **Loading surfaces (2026-09).** The lazy ChatPanel chunk suspends into `ChatPanelFallback` at
+  ALL THREE mount sites (canvas node, kanban card modal, closed-transcript dialog — it replaced a
+  `fallback={null}` that left the ⌘M face blank over the terminal): the panel's own shell plus
+  `ChatLoadingStatus`, which ChatPanel's initial "Loading conversation…" row renders too, so the
+  handover is identical DOM (a second row swapped rings and re-announced its `role=status`). Its
+  spinner is the app's ONE spinner, `components/Spinner` / `.nt-spinner` — frozen, not hidden,
+  under `prefers-reduced-motion`; never add a local one. A terminal node's label row ends in a
+  quiet ⌘M hint (`lib/mdViewHint.ts`, id `md-hint`, hideable in Settings → Appearance) naming the
+  EFFECTIVE chord and what it opens on that node; it sits in a zero-basis trailing slot that
+  clips, so it can never add a line to the row (a height flip would refit xterm and SIGWINCH
+  tmux). It is not on the kanban card modal: that header already carries the ⌘M toggle.
   **The composer sends only in `done` or an unknown state** (`canSendFromChat`,
   `renderer/lib/chatSendGate.ts`) — never in `waiting`/`blocked`, not just never in `working`:
   PermissionRequest and AskUserQuestion both normalize to `waiting`, the pane then holds a TUI

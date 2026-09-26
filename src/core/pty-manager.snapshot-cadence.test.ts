@@ -36,10 +36,20 @@ vi.mock('child_process', () => {
   return { execFile, execFileSync: (): string => '' }
 })
 
-const store = vi.hoisted(() => ({ writes: [] as Array<{ key: string; text: string }> }))
+/** Every write ATTEMPT is recorded; `failNext` makes the next one report failure (the store never
+ *  throws — it resolves false, see scrollback-store.ts). */
+const store = vi.hoisted(() => ({
+  writes: [] as Array<{ key: string; text: string }>,
+  failNext: false
+}))
 vi.mock('./scrollback-store', () => ({
   writeScrollback: async (key: string, text: string) => {
     store.writes.push({ key, text })
+    if (store.failNext) {
+      store.failNext = false
+      return false
+    }
+    return true
   },
   readScrollback: async () => '',
   deleteScrollback: async () => {}
@@ -58,6 +68,7 @@ interface Internals {
   snapshotTick(): void
   snapshotScrollback(k: string): Promise<boolean>
   destroySession(clientId: null, persistKey: string): Promise<void>
+  killAll(): Promise<void>
 }
 
 async function manager(keys: string[]): Promise<Internals> {
@@ -88,6 +99,7 @@ beforeEach(() => {
   tmux.fail = false
   tmux.text = 'PANE SNAPSHOT'
   store.writes.length = 0
+  store.failNext = false
 })
 afterEach(() => resetPlatformForTests())
 
@@ -214,5 +226,33 @@ describe('snapshot digest skip', () => {
     await mgr.destroySession(null, 'gone')
     await mgr.snapshotScrollback('gone')
     expect(store.writes.map((w) => w.key)).toEqual(['gone', 'gone'])
+  })
+
+  it('a failed write is not remembered, so an identical capture writes again', async () => {
+    const mgr = await manager(['a'])
+    store.failNext = true
+    await mgr.snapshotScrollback('a')
+    await mgr.snapshotScrollback('a')
+    await mgr.snapshotScrollback('a')
+    // attempt 1 failed, attempt 2 landed, attempt 3 is the identical capture that is skipped
+    expect(store.writes.map((w) => w.text)).toEqual(['PANE SNAPSHOT', 'PANE SNAPSHOT'])
+  })
+})
+
+describe('quit while a periodic capture is queued', () => {
+  it('killAll still captures a session whose periodic capture has not run yet', async () => {
+    const mgr = await manager(['a', 'b'])
+    for (const s of mgr.sessions.values()) s.proc = { resume: () => {}, kill: () => {} }
+    tmux.hold = true
+    mgr.snapshotTick() // queues a, then b behind it; both dirty bits are now cleared
+    await new Promise((r) => setImmediate(r))
+    expect(tmux.captures).toEqual(['nt-a']) // b is queued, not yet run
+    tmux.hold = false
+    await mgr.killAll()
+    // Both get their final quit capture — b's queued periodic one may never run before exit.
+    expect(tmux.captures.filter((t) => t === 'nt-b')).toHaveLength(1)
+    expect(tmux.captures.filter((t) => t === 'nt-a')).toHaveLength(2)
+    tmux.held.shift()!.cb(null, { stdout: 'A', stderr: '' })
+    await settle(mgr)
   })
 })

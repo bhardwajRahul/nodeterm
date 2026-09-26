@@ -4248,8 +4248,10 @@ export class PtyManager {
   private async writeScrollbackIfChanged(persistKey: string, text: string): Promise<void> {
     const digest = createHash('sha1').update(text).digest('hex')
     if (this.lastSnapshotDigest.get(persistKey) === digest) return
-    await writeScrollback(persistKey, text)
-    this.lastSnapshotDigest.set(persistKey, digest)
+    // Only a write that LANDED may be remembered: recording the digest of a failed one (ENOSPC, a
+    // rename that exhausted its retries on Windows) would skip every later identical capture —
+    // detach/quit's final ones included — for the rest of the run.
+    if (await writeScrollback(persistKey, text)) this.lastSnapshotDigest.set(persistKey, digest)
   }
 
   /**
@@ -5430,8 +5432,10 @@ export class PtyManager {
     for (const session of this.sessions.values()) {
       if (session.flushTimer) clearTimeout(session.flushTimer)
       // Final scrollback snapshot on quit so a reboot can replay it. Skipped for sessions with
-      // no output since the last periodic capture (unchanged pane content).
-      if (session.persistKey && session.outputSinceSnapshot)
+      // no output since the last periodic capture (unchanged pane content) — but NOT for one whose
+      // periodic capture is still queued on `snapshotChain`: the tick cleared the dirty bit when it
+      // QUEUED, the chain is not awaited here, and the process may exit before that link runs.
+      if (session.persistKey && (session.outputSinceSnapshot || session.snapshotQueued))
         finals.push(
           this.snapshotScrollback(session.persistKey, session.sshRemote, !!session.sessionHost)
         )

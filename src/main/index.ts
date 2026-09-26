@@ -226,6 +226,12 @@ import {
   remoteTranscriptRoots
 } from '../core/remote-transcript-locate'
 import { registerTranscriptIpc, resolveTranscript } from '../core/transcript-ipc'
+import {
+  createReadRemotePage,
+  forgetLocatedRef,
+  rememberHookRef,
+  type RemoteTranscriptRefCache
+} from './remote-transcript-page'
 import { createRemoteContextTail } from './remote-context-tail'
 import { createRemoteSubagentTail } from './remote-subagent-tail'
 import { RemoteFile, type RemoteFileRef } from './remote-ssh/remote-file'
@@ -2451,6 +2457,10 @@ app.whenReady().then(async () => {
   // separately so a stale entry can be dropped on a failed read without touching the hook-fed
   // ones — see `readRemoteTranscript`.
   const locatedTranscriptSessions = new Set<string>()
+  const remoteTranscriptRefs: RemoteTranscriptRefCache = {
+    bySession: remoteTranscriptBySession,
+    located: locatedTranscriptSessions
+  }
   // Route the session-name read (the node-title poll) through the same remote ref. An SSH
   // project's agent runs on the remote host, so its transcript is NOT under the local
   // `~/.claude/projects` — without this, `/rename` never reached the node title on remote nodes
@@ -2640,9 +2650,7 @@ app.whenReady().then(async () => {
     cap: number = REMOTE_TRANSCRIPT_CAP
   ): Promise<string> => {
     const text = await remoteFile.readTail(ref, cap)
-    if (!text && locatedTranscriptSessions.delete(sessionId)) {
-      remoteTranscriptBySession.delete(sessionId)
-    }
+    if (!text) forgetLocatedRef(remoteTranscriptRefs, sessionId)
     return text
   }
 
@@ -2655,6 +2663,16 @@ app.whenReady().then(async () => {
       const ref = await remoteTranscriptRefFor(sessionId, cwd, accountId, nodeId)
       return ref ? await readRemoteTranscript(sessionId!, ref) : null
     },
+    // The paged ⌘M read: a RANGED read on the host (window + file size in one ssh round trip)
+    // instead of `readTail`'s 5 MB, which this leg used to pull on every panel open and every
+    // turn-end reload. Same ref resolution and same forget-a-located-ref-on-failure rule as
+    // `readRemoteTranscript`; the path it reads is already jailed by `isSafeRemoteTranscriptPath`.
+    readRemotePage: createReadRemotePage({
+      cache: remoteTranscriptRefs,
+      refFor: ({ sessionId, cwd, accountId, nodeId }) =>
+        remoteTranscriptRefFor(sessionId, cwd, accountId, nodeId),
+      readPage: (ref, before, maxBytes) => remoteFile.readTranscriptPage(ref, before, maxBytes)
+    }),
     remoteExists: async ({ sessionId, accountId, nodeId }) =>
       sessionId ? await remoteTranscriptPresence(sessionId, accountId, nodeId) : null
   })
@@ -3166,7 +3184,8 @@ app.whenReady().then(async () => {
       if (p.session_id && transcriptPath) {
         const ref: RemoteFileRef = { conn: rt.conn, controlPath: rt.controlPath, path: transcriptPath }
         remoteContextTail.track(p.session_id, ref, _meta.contextWindow)
-        remoteTranscriptBySession.set(p.session_id, ref)
+        // Hook-fed from now on: a later failed read must not drop it (see remote-transcript-page).
+        rememberHookRef(remoteTranscriptRefs, p.session_id, ref)
       }
       if (nodeId && p.session_id) nodeContextSession.set(nodeId, p.session_id)
       // Context Link: remember the node's transcript path for remote nodes too. This branch used

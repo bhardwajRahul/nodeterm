@@ -1,7 +1,14 @@
 // Reads remote files over the project's existing ControlMaster (`ssh <childArgs> 'tail …'`).
 // Pure builders + an injected-runner class so the read logic is electron-free and unit-testable;
 // the actual ssh spawn is injected by the caller (Tasks 2/3 wire it to the project's runner).
-import { transcriptWindowCommand, parseTranscriptWindow, type TranscriptWindow } from '../../core/remote-ssh/transcript-window'
+import {
+  transcriptWindowCommand,
+  parseTranscriptWindow,
+  transcriptPageCommand,
+  parseTranscriptPage,
+  type TranscriptWindow,
+  type TranscriptPage
+} from '../../core/remote-ssh/transcript-window'
 import { childArgs } from '../../core/remote-ssh/control-master'
 import { posixQuote, type SshConnection } from '../../shared/ssh'
 
@@ -39,6 +46,19 @@ export class RemoteFile {
       transcriptWindowCommand(ref.path, offset, cap)))
     if (code !== 0) throw new Error('Remote transcript command failed')
     return parseTranscriptWindow(stdout, cap)
+  }
+
+  /**
+   * One PAGE of a transcript for the ⌘M panel — a ranged read (window end + size in the same round
+   * trip) instead of `readTail`'s whole 5 MB. STRICT like `readContextWindow`: a failed or malformed
+   * read throws, because the caller must be able to tell "the host could not be read" from "an
+   * empty page" (the latter is a real answer for an empty transcript).
+   */
+  async readTranscriptPage(ref: RemoteFileRef, before: number | null, maxBytes: number): Promise<TranscriptPage> {
+    const { code, stdout } = await this.run(childArgs(ref.conn, ref.controlPath,
+      transcriptPageCommand(ref.path, before, maxBytes)))
+    if (code !== 0) throw new Error('Remote transcript command failed')
+    return parseTranscriptPage(stdout, before, maxBytes)
   }
 
   async readFrom(ref: RemoteFileRef, offset: number): Promise<{ text: string; newOffset: number }> {

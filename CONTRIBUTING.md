@@ -373,6 +373,10 @@ lane unaffected.
   gone until a reload). One delegated handler (`renderer/lib/markdownLinks.ts`) intercepts clicks
   inside `RENDERED_MARKDOWN_CONTAINERS`; a new surface that injects markdown HTML must use one of
   those classes or join the list — `markdownLinks.test.ts` fails otherwise.
+- **A loading indicator is `components/Spinner`, never a local spinner.** `.nt-spinner` is the one
+  ring in `styles.css`, and it freezes under `prefers-reduced-motion`; a local copy is how a
+  spinner kept rotating for users who asked for no motion, and how two rings swapped mid-load. Put
+  `role="status"` on the row holding the text, not on a second spinner beside it.
 
 These are the ones that come up in review most often. Each exists because its absence caused a real
 bug.

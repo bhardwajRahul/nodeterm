@@ -2375,6 +2375,57 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   its `contextTail`, the hook-fed path authority). The browser's real reader is
   `buildTranscriptApi` in ws-bridge — deliberately NOT folded into `buildClaudeApi`, which the
   relay shares and must not adopt it.
+  **Paged reads (2026-09).** `chat.readTranscript` takes a trailing optional `page`
+  (`{before?, maxBytes?}`, `shared/chat-page.ts`). Absent = the legacy 5 MB-tail read, byte for byte
+  (result is exactly `{messages, found}`). Present = ONE window of at most `maxBytes` (clamped
+  64 KB…5 MB — it is untrusted IPC/WS input; an invalid `before` REJECTS rather than being coerced
+  to "end of file") ending at byte `before`, and the result adds `olderCursor` (where the window's
+  first complete line starts — the next page's `before`; `null` = reached the start), a per-message
+  `key` (the line's ABSOLUTE byte offset — stable across prepends and appends), `id` on tool parts,
+  and `unmatchedResults` (tool results whose `tool_use` sits in an OLDER window: the newer page is
+  read first, so the renderer holds them until that page arrives). Parsing is the pure
+  `parseChatWindow` over BYTES (a multi-byte char cut by the window edge only lands in the dropped
+  partial line), and every window is read with **one byte of lookbehind** — the only way to know a
+  line begins exactly on the edge; without it that line is dropped as "partial" and lost. A window
+  with **no complete line** (one record bigger than the window — in practice a `type:user` line
+  carrying a pasted screenshot or an image tool_result; 181 lines over 512 KB in 30 days on one
+  host) is flagged `noCompleteLine` and **re-read at the same `before` with ×4 the bytes, up to the 5 MB cap**
+  (`parseGrowingWindow` in `core/transcript-ipc.ts` — local AND SSH leg; a failed re-read is
+  not-found, never the skip). Only a line **longer than 5 MB** is skipped (`olderCursor = window
+  start`, never the window end, which would re-request the identical window forever) — before this,
+  every line bigger than the page vanished, a regression against the legacy 5 MB read. The **SSH leg** is a ranged read
+  (`transcriptPageCommand`, `core/remote-ssh/transcript-window.ts` — size + window in ONE round
+  trip, dd status inside the base64 like the context-tail's window command) instead of pulling the
+  5 MB tail on every open and every turn-end reload; its `{ok:false}` is terminal (never the local
+  disk), and it is tested under a real `/bin/sh` (`transcript-page.realsh.test.ts`). **Grok does not
+  page**: a paged request gets its whole capped read with `olderCursor: null` and no keys.
+  Server Edition passes `page` through ws-bridge to the same core handler; relay still refuses.
+  **ChatPanel consumes it progressively** (pure state in `renderer/lib/chatPaging.ts`): the first
+  read is a 256 KB tail (`CHAT_TAIL_PAGE_BYTES`, with a "Loading conversation…" row), older 512 KB
+  pages load when the user scrolls within 200 px of the top (or by themselves while the thread is
+  shorter than the viewport — it cannot scroll), one at a time behind their own token, prepended
+  with the scroll position ANCHORED on the scrollHeight delta (the loading row's own appearance
+  included). A turn-end reload / ↻ re-reads only the tail and **merges by key**, keeping the older
+  pages already loaded — unless no rendered message reaches into the new window (the turn wrote
+  more than a whole window, so the bytes in between were never read): then it RESETS to the tail
+  rather than stitch over a hole. Carried tool results are held until their tool's page arrives and
+  dropped at the start of the file. `found:false` on an OLDER page is a failed page load (retry row,
+  thread kept), not a missing transcript; a reload that fails to resolve never blanks a rendered
+  thread — only a read with nothing on screen says "No transcript found". The remote leg's
+  forget-a-located-ref rule lives in `main/remote-transcript-page.ts` (a hook-fed ref is never
+  dropped on a failed read, and a hook event re-marks a located ref as hook-fed). Grok: one
+  unkeyed read, no older pages, no "Beginning of conversation" marker (a capped read cannot know).
+  **Loading surfaces (2026-09).** The lazy ChatPanel chunk suspends into `ChatPanelFallback` at
+  ALL THREE mount sites (canvas node, kanban card modal, closed-transcript dialog — it replaced a
+  `fallback={null}` that left the ⌘M face blank over the terminal): the panel's own shell plus
+  `ChatLoadingStatus`, which ChatPanel's initial "Loading conversation…" row renders too, so the
+  handover is identical DOM (a second row swapped rings and re-announced its `role=status`). Its
+  spinner is the app's ONE spinner, `components/Spinner` / `.nt-spinner` — frozen, not hidden,
+  under `prefers-reduced-motion`; never add a local one. A terminal node's label row ends in a
+  quiet ⌘M hint (`lib/mdViewHint.ts`, id `md-hint`, hideable in Settings → Appearance) naming the
+  EFFECTIVE chord and what it opens on that node; it sits in a zero-basis trailing slot that
+  clips, so it can never add a line to the row (a height flip would refit xterm and SIGWINCH
+  tmux). It is not on the kanban card modal: that header already carries the ⌘M toggle.
   **The composer sends only in `done` or an unknown state** (`canSendFromChat`,
   `renderer/lib/chatSendGate.ts`) — never in `waiting`/`blocked`, not just never in `working`:
   PermissionRequest and AskUserQuestion both normalize to `waiting`, the pane then holds a TUI

@@ -100,3 +100,28 @@ describe('RemoteFile.readContextWindow', () => {
     await expect(new RemoteFile(async () => ({ code: 0, stdout: 'invalid' })).readContextWindow(ref, 42, 1024)).rejects.toThrow()
   })
 })
+
+describe('RemoteFile.readTranscriptPage', () => {
+  const framed = (payload: string): string =>
+    Buffer.from(payload + '\nNODETERM_READ_STATUS:0\n').toString('base64')
+  it('runs the ranged page command over the master and returns the exact bytes', async () => {
+    let seen: string[] = []
+    const rf = new RemoteFile(async (args) => {
+      seen = args
+      return { code: 0, stdout: '0 3 3\n' + framed('abc') }
+    })
+    const page = await rf.readTranscriptPage(ref, null, 65536)
+    expect(page.data.toString()).toBe('abc')
+    expect(page).toMatchObject({ start: 0, end: 3, size: 3 })
+    expect(seen.join(' ')).toContain('NODETERM_READ_STATUS')
+  })
+  it('throws on transport failure or a malformed reply — never an empty page', async () => {
+    for (const run of [
+      async () => ({ code: 1, stdout: '' }),
+      async () => ({ code: 0, stdout: 'junk' }),
+      async () => { throw new Error('offline') }
+    ]) {
+      await expect(new RemoteFile(run).readTranscriptPage(ref, 10, 65536)).rejects.toThrow()
+    }
+  })
+})

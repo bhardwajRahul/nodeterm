@@ -937,14 +937,17 @@ export function buildTranscriptApi(
 ): Pick<NodeTerminalApi, 'chat'> & { claudeReadTranscript: ClaudeApi['readTranscript'] } {
   return {
     chat: {
-      readTranscript: (sessionId, cwd, accountId, nodeId, agentId) =>
+      // `page` rides through untouched: the server validates it (`normalizeChatPage`) — the
+      // browser is the untrusted side of this wire, so checking it here would prove nothing.
+      readTranscript: (sessionId, cwd, accountId, nodeId, agentId, page) =>
         client.request(
           IPC.chatReadTranscript,
           sessionId,
           cwd,
           accountId,
           nodeId,
-          agentId
+          agentId,
+          page
         ) as Promise<ChatTranscriptResult>,
       // A REAL implementation, not a stub: the server runs on the machine holding these
       // transcripts, so its answer is as good as the desktop's local leg. A failed request

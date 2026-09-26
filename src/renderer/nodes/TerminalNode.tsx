@@ -23,10 +23,13 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
 import { WebglAddon } from '@xterm/addon-webgl'
+import { ChatPanelFallback } from './ChatPanelFallback'
 // ChatPanel (the ⌘M transcript view) is code-split with the markdown renderer it uses: neither is
 // on the path to painting a terminal, and both were in the startup chunk purely by being imported
-// here. `lazy` + a null fallback — the panel replaces the terminal body on a keypress, and a
-// one-frame spinner in that slot reads as a glitch.
+// here. The fallback is the panel's own shell (`ChatPanelFallback`: bar + spinner + "Loading
+// conversation…"), NOT null: a null fallback was chosen on the theory that the chunk arrives in a
+// frame, but in use the ⌘M face sat blank long enough to be reported as broken (2026-09-26). The
+// shell has the panel's exact geometry, so a fast load still reads as the panel appearing.
 const ChatPanel = lazy(() => import('./ChatPanel').then((m) => ({ default: m.ChatPanel })))
 import { LocalTransport } from '../terminal/local-transport'
 import { clipboardImages, droppedPaths, pasteHasText, pastedFiles } from '../terminal/file-drop'
@@ -178,6 +181,8 @@ import { focusXtermUnlessCovered, terminalOwnsFileInput, useMdModeFocus } from '
 import { canvasOwnsMarkdownChord } from '../lib/markdownChord'
 import { IconChat, IconChevronDown, IconChevronRight, IconClose, IconEye, IconEyeOff, IconGrid, IconMic, IconMoveTo, IconPlay, IconReload, IconSearch, IconSparkle } from '../components/icons'
 import { NodeLabels } from '../components/kanban/NodeLabels'
+import { MdViewHintButton } from '../components/MdViewHintButton'
+import { mdViewHint } from '../lib/mdViewHint'
 import { Tooltip } from '../components/Tooltip'
 import { useTerminalSearch } from '../terminal/useTerminalSearch'
 import { useCopyFeedback } from '../terminal/useCopyFeedback'
@@ -235,6 +240,7 @@ import { ensureActivePermissionMode } from '../state/permissionMode'
 import { buildSshArgs, sshConnectionIdForProject, sshHostKey, type SshConnection } from '@shared/ssh'
 import {
   chipFor,
+  commandTooltip,
   effectiveBindings,
   terminalChordBubbles,
   terminalShortcutPolicy
@@ -1919,7 +1925,10 @@ export function TerminalNode({
     : ''
   // Use the chat panel only for a chat-capable agent with a known session; otherwise the
   // markdown-of-output view (computed in the capture effect below) is shown as a fallback.
-  const useChat = mdMode && showChat && !!status?.sessionId
+  // `chatAvailable` is split out because the label-row ⌘M hint names the face BEFORE it is open:
+  // one value feeds both, so the hint cannot say "Chat view" while the chord opens markdown.
+  const chatAvailable = showChat && !!status?.sessionId
+  const useChat = mdMode && chatAvailable
   useContextEnsure(session.api.context, id, agentId, status?.sessionId, (data.cwd as string) || undefined, accountForReads)
   const updateNodeInternals = useUpdateNodeInternals()
 
@@ -5334,6 +5343,7 @@ export function TerminalNode({
   // Whatever the markdown toggle is bound to; '' when the user unbound it, in which case the
   // markdown view's hint names the action instead of promising a chord that never fires.
   const mdChip = chipFor('node.toggleMarkdown')
+  const mdHint = mdViewHint({ chip: mdChip, open: mdMode, chatAvailable, hidden: hiddenHeaderButtons })
 
   // The experimental shared glyph renderer paints text on a canvas BELOW the nodes, so a glass
   // tint would sit on top of every glyph: glass stands down while a grid is mounted.
@@ -5852,7 +5862,21 @@ export function TerminalNode({
         />
       )}
 
-      {!collapsed && <NodeLabels nodeId={id} />}
+      {!collapsed && (
+        <NodeLabels
+          nodeId={id}
+          trailing={
+            mdHint && (
+              <MdViewHintButton
+                hint={mdHint}
+                tooltip={commandTooltip(mdMode ? 'Back to the terminal' : `Open ${mdHint.label.toLowerCase()}`, 'node.toggleMarkdown')}
+                // The same flip as the chord handler and the context-menu item.
+                onToggle={() => updateNodeData(id, (n) => ({ mdMode: !n.data.mdMode }))}
+              />
+            )
+          }
+        />
+      )}
 
       {/* Body always mounted (keeps xterm alive); hidden via CSS when collapsed. */}
       <div
@@ -6019,7 +6043,7 @@ export function TerminalNode({
         )}
         {mdMode &&
           (useChat ? (
-            <Suspense fallback={null}>
+            <Suspense fallback={<ChatPanelFallback />}>
               <ChatPanel
                 nodeId={id}
                 sessionId={status?.sessionId}

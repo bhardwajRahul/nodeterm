@@ -90,6 +90,33 @@ describe('TerminalMarkdownView', () => {
     expect(host.querySelector('.term-md__hint')?.textContent).toBe('⌘M to exit')
   })
 
+  it('shows a spinner beside the initial "Capturing…", announced politely, gone once the output lands', async () => {
+    mount()
+    const status = content().querySelector('[role="status"]') as HTMLElement
+    expect(status).toBeTruthy()
+    expect(status.getAttribute('aria-live')).toBe('polite')
+    expect(status.querySelector('.nt-spinner')).toBeTruthy()
+    pending[0].resolve('done')
+    await settle()
+    expect(host.querySelector('.nt-spinner')).toBeNull()
+  })
+
+  it('shows a spinner beside the bar\'s refresh "Capturing…" status, gone once it settles', async () => {
+    mount()
+    pending[0].resolve('first')
+    await settle()
+    expect(host.querySelector('.nt-spinner')).toBeNull()
+    act(() => refresh().click())
+    const status = host.querySelector('.term-md__bar [role="status"]') as HTMLElement
+    expect(status).toBeTruthy()
+    expect(status.getAttribute('aria-live')).toBe('polite')
+    expect(status.textContent).toContain('Capturing…')
+    expect(status.querySelector('.nt-spinner')).toBeTruthy()
+    pending[1].resolve('second')
+    await settle()
+    expect(host.querySelector('.nt-spinner')).toBeNull()
+  })
+
   it("says so when the capture is empty — '' is an answer, not a blank page", async () => {
     mount()
     pending[0].resolve('\n\n  \n')

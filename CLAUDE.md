@@ -912,6 +912,19 @@ session (you can't keep a live OS process across a reboot):
   renderer reads it via `pty.readScrollback` and writes it back into xterm (with a "session
   restored" separator). Warm reattach skips it (tmux already redraws). Deleted with the node in
   `destroySession`.
+  **The periodic capture is paced, serialized and deduplicated** (`snapshotTick`,
+  `core/scrollback-cadence.ts`). A working agent's spinner keeps its session dirty forever, so the
+  old tick spawned a `capture-pane -S -1500` (an ssh exec for a remote node) and rewrote up to
+  256 KB for EVERY busy session, all in the same instant, every 15 s. Now: a dirty session is
+  captured on its first `BUSY_AFTER_TICKS` (4) consecutive dirty ticks, then every
+  `BUSY_EVERY_TICKS`-th (60 s); an off-cadence tick KEEPS the dirty bit, which is what lets
+  detach/quit still take their final capture; an idle tick resets the count. Captures run one at a
+  time on `snapshotChain`, a session whose capture is still queued is never queued twice
+  (`snapshotQueued`), and a failed capture re-marks it dirty. Every write (periodic, detach, quit)
+  goes through `writeScrollbackIfChanged`, which skips a capture whose sha1 matches the last one
+  written; the digest is dropped with the file in `endSession`, so a recreated node always writes.
+  The cost is bounded and deliberate: a continuously busy session's post-reboot replay can be up to
+  ~60 s stale, since the snapshot only serves a machine reboot.
 - **Agent resume** — on a cold start of a node whose `agentId` is in `RESUMABLE_AGENTS`, the
   renderer re-launches the agent CLI: `resumeCommand(agentId, sessionId)` (from the session id
   persisted in `agentStatus` localStorage — `claude --resume`, `codex resume`, `gemini

@@ -24,15 +24,21 @@ export interface ContextElement {
   tagName: string
   isContentEditable?: boolean
   classList?: { contains(name: string): boolean }
+  /** DOM ancestry, when the element has it (a real Element does); absent = no ancestry answer. */
+  closest?(selector: string): unknown
 }
 
-/** The ⌘M chat composer's textarea (nodes/ChatComposer.tsx). A TYPING target like any other, with
- *  one exception the dispatcher makes: keyed dictation is allowed there, because the composer is
- *  the one text field dictation can fill (lib/chatComposerDictation.ts). */
-export const CHAT_COMPOSER_INPUT_CLASS = 'term-chat__input'
+/** The ⌘M chat composer's box (nodes/ChatComposer.tsx carries this attribute). Matched
+ *  STRUCTURALLY, never by the textarea's class: `term-chat__input` is shared with the plan
+ *  "Revise…" textarea and the question "Other" input (ChatAnswerControls), which sit OUTSIDE the
+ *  box — and dictation fired there typed into the hidden pane showing that very dialog. */
+export const CHAT_COMPOSER_BOX_SELECTOR = '[data-chat-composer-id]'
 
+/** Focus inside the ⌘M composer box: a TYPING target like any other, with one exception the
+ *  dispatcher makes — keyed dictation is allowed there, because the composer is the one text
+ *  field dictation fills (lib/chatComposerDictation.ts). */
 export function isChatComposerTarget(el: ContextElement | null): boolean {
-  return el?.classList?.contains(CHAT_COMPOSER_INPUT_CLASS) === true
+  return !!el?.closest?.(CHAT_COMPOSER_BOX_SELECTOR)
 }
 
 export function isTerminalTarget(el: ContextElement | null): boolean {

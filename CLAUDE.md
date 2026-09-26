@@ -2585,7 +2585,12 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   there would type into it — the pane is not observable from here. Shortcut dictation (keyed chord
   and hold-to-talk) targets the composer holding the caret before the selected terminal (the pane
   under the view is hidden) via `composerFromElement`; the dispatcher offers keyed dictation in
-  that one text field (`isChatComposerTarget`).
+  that one text field (`isChatComposerTarget`). Both are keyed on the composer BOX
+  (`[data-chat-composer-id]`), never on the textarea's `term-chat__input` class — the plan
+  "Revise…" textarea and the question "Other" input share that class and sit outside the box. With
+  focus anywhere else inside `.term-chat` (those fields, the answer buttons) BOTH shortcut paths
+  refuse (`shortcutDictationFocus` → `refuse`): their fallback, the selected terminal, is the hidden
+  pane showing the very plan/question dialog, and a take sent there would answer it.
 - **Subagent visualization** (agents in `SUBAGENT_CAPABLE`) — `subagent-start`/`subagent-end`
   normalized events (from Claude's `PreToolUse`/`PostToolUse` on tool `Agent`/`Task`, correlated
   by `tool_use_id`) drive a transient `state/agentNodes.ts` store. Claude launches subagents

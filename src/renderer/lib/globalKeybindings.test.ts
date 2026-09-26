@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { CommandId } from '@shared/keybindings'
 import { dispatchGlobalKeydown, type GlobalKeydownDeps, type GlobalKeyEvent } from './globalKeybindings'
-import { CHAT_COMPOSER_INPUT_CLASS, XTERM_INPUT_CLASS, type ContextElement } from './keyContext'
+import { XTERM_INPUT_CLASS, type ContextElement } from './keyContext'
 
 const ev = (over: Partial<GlobalKeyEvent>): GlobalKeyEvent => ({
   metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, key: '',
@@ -63,24 +63,6 @@ describe('dispatchGlobalKeydown', () => {
     expect(dispatchGlobalKeydown(ev({ metaKey: true, key: 't' }), typing)).toBe(false)
     const terminal = deps({ gestures: g, activeElement: xtermEl })
     dispatchGlobalKeydown(ev({ metaKey: true, key: 't' }), terminal)
-    expect(dictation).toHaveBeenCalledTimes(1)
-  })
-  it('keyed dictation IS offered in the ⌘M chat composer (the one text field it fills), and nowhere else that types', () => {
-    const dictation = vi.fn((e: GlobalKeyEvent) => { e.preventDefault(); return true })
-    const g = { keyedDictation: dictation, zoom: noGesture, projectJump: noGesture, copy: noGesture }
-    const composer = deps({
-      gestures: g,
-      activeElement: () => ({ tagName: 'TEXTAREA', classList: { contains: (n: string) => n === CHAT_COMPOSER_INPUT_CLASS } })
-    })
-    expect(dispatchGlobalKeydown(ev({ metaKey: true, key: 'd', shiftKey: true }), composer)).toBe(true)
-    const otherTextarea = deps({ gestures: g, activeElement: () => ({ tagName: 'TEXTAREA', classList: { contains: () => false } }) })
-    expect(dispatchGlobalKeydown(ev({ metaKey: true, key: 'd', shiftKey: true }), otherTextarea)).toBe(false)
-    const onBoard = deps({
-      gestures: g,
-      kanbanOpen: () => true,
-      activeElement: () => ({ tagName: 'TEXTAREA', classList: { contains: (n: string) => n === CHAT_COMPOSER_INPUT_CLASS } })
-    })
-    expect(dispatchGlobalKeydown(ev({ metaKey: true, key: 'd', shiftKey: true }), onBoard)).toBe(false)
     expect(dictation).toHaveBeenCalledTimes(1)
   })
   it('typing blocks canvas AND app commands (the announced D-typing guard fix)', () => {

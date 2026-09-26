@@ -157,7 +157,7 @@ import { WelcomeScreen } from '../components/WelcomeScreen'
 import { CloneRepoDialog } from '../components/CloneRepoDialog'
 import { markMobileLaunchSeen, shouldShowMobileLaunch } from '../lib/mobileLaunch'
 import type { DictationTarget } from '../components/DictationOverlay'
-import { composerFromElement, dictationTargetFromRequest } from '../lib/chatComposerDictation'
+import { composerFromElement, dictationTargetFromRequest, shortcutDictationFocus } from '../lib/chatComposerDictation'
 import { describeOs, REPO_URL } from '../lib/bugReport'
 import { shouldReleasePaneFocus } from '../lib/paneFocus'
 import {
@@ -2398,6 +2398,9 @@ export function Canvas() {
         setDictationStopSignal((n) => n + 1)
         return true
       }
+      // Focus in a ⌘M chat view but outside its composer: the fallback below would target the
+      // hidden pane showing the dialog those controls answer (shortcutDictationFocus).
+      if (shortcutDictationFocus(document.activeElement) === 'refuse') return false
       const composer = focusedComposerDictationTarget()
       if (composer) {
         setDictationTarget(composer)
@@ -5066,6 +5069,9 @@ export function Canvas() {
         if (e.repeat) return
         if (!isModifierEventKey(e.key)) return
         if (!chordHeld(e, combo, isMac)) return
+        // Same refusal as the keyed path: hold-to-talk has no typing guard, so with focus on a
+        // plan/question answer control it would otherwise dictate into the hidden dialog pane.
+        if (shortcutDictationFocus(document.activeElement) === 'refuse') return
         armed = true
         heldSince = Date.now()
         const sel = nodesRef.current.find((n) => n.selected && n.type === 'terminal')

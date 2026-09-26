@@ -7,6 +7,7 @@
 // once (the canvas node's ⌘M face and the kanban card modal's), and a take must land in the one
 // whose mic was clicked, exactly once.
 import type { DictationTarget } from '../components/DictationOverlay'
+import { CHAT_COMPOSER_BOX_SELECTOR } from './keyContext'
 
 interface ComposerDictationDetail {
   composerId: string
@@ -67,9 +68,23 @@ export function subscribeComposerDictation(composerId: string, onText: (text: st
  * live in Canvas and know nothing of which panel is mounted.
  */
 export function composerFromElement(el: Element | null | undefined): { nodeId: string; composerId: string } | null {
-  const box = el?.closest?.('[data-chat-composer-id]')
+  const box = el?.closest?.(CHAT_COMPOSER_BOX_SELECTOR)
   if (!box) return null
   const composerId = box.getAttribute('data-chat-composer-id')
   const nodeId = box.getAttribute('data-chat-node-id')
   return composerId && nodeId ? { nodeId, composerId } : null
+}
+
+/**
+ * What a SHORTCUT dictation press (keyed chord or hold-to-talk) may do given where focus is.
+ * `composer`: fill that composer's draft. `refuse`: focus is inside a ⌘M chat view but not in its
+ * composer — the plan "Revise…" textarea, a question's "Other" input, an answer button — and the
+ * shortcut's fallback target, the selected terminal, is the HIDDEN pane under the view, which at
+ * that moment is showing the very plan/question dialog those controls answer; a take sent there
+ * (text + Enter) would answer it. `default`: the ordinary rule (card modal, selected terminal).
+ */
+export function shortcutDictationFocus(el: Element | null | undefined): 'composer' | 'refuse' | 'default' {
+  if (composerFromElement(el)) return 'composer'
+  if (el?.closest?.('.term-chat')) return 'refuse'
+  return 'default'
 }

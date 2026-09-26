@@ -1180,7 +1180,18 @@ seed** — the cases are:
   (gated on `persistKey`, on BOTH the screen and resize branches) and the renderer writes
   `CO_ATTACH_MOUSE_SEQ` into the fresh xterm (both `ModalTerminal` and `TerminalNode`). tmux is
   always `mouse on`, so this matches its invariant client state; the enable is idempotent. Was the
-  "can't scroll the kanban card-modal terminal until you press a key" bug.
+  "can't scroll the kanban card-modal terminal until you press a key" bug. **A co-attach joiner
+  ALSO misses tmux's attach-time `\e[?1049h`**, and a renderer reload is a joiner too (it re-joins
+  the SAME still-alive tmux client via `join()`, so tmux never re-attaches it). `join()` therefore
+  sets `coAttachAltScreen` for tmux-backed sessions only — gated on `tmuxBacked && !sessionHost`,
+  never plain-shell/session-host, whose normal-buffer scrollback is their only history — and the
+  renderer writes `CO_ATTACH_ALT_SCREEN_SEQ` **BEFORE** painting (entering the alternate buffer
+  clears the display, so writing it after would erase the paint; TerminalNode skips it once a
+  resync has superseded the seed, since that repaint may already be on screen). Without it a
+  renderer reload left every terminal on the normal buffer, piling up to 10k lines of scrollback
+  and forcing a layout per output frame — measured 16.1% vs 7.3% CPU for one terminal at
+  20 lines/s, 313 vs 1 forced layouts per 20 s. Note `repaintResync`'s `term.reset()` also drops a
+  terminal back to the normal buffer; that is not addressed here.
 
 xterm's own `scrollback` (`xtermScrollback(settings.tmuxScrollback)`, floored at 1000, capped at
 `XTERM_SCROLLBACK_MAX` = 10000) is kept for the sessions tmux does *not* back (a plain shell when

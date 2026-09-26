@@ -554,6 +554,11 @@ export const RESYNC_NOTICE = '\r\n\x1b[90m── reconnected — earlier output 
  */
 export const CO_ATTACH_MOUSE_SEQ = '\x1b[?1000h\x1b[?1002h\x1b[?1006h'
 
+/** Written into a TMUX-BACKED joiner's fresh xterm BEFORE its screen is painted — see
+ *  `PtyCreateResult.coAttachAltScreen`. Must precede the paint: entering the alternate buffer
+ *  clears the display. */
+export const CO_ATTACH_ALT_SCREEN_SEQ = '\x1b[?1049h'
+
 /**
  * The capture generation of the LAST repaint issued for a terminal, so a deferred repaint can tell
  * that a newer capture has superseded it (see `repaintResync`). Weak, and keyed by the xterm itself:

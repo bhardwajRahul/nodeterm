@@ -74,6 +74,7 @@ import {
   xtermOptionsFromSettings,
   SHIFT_ENTER_SEQ,
   CO_ATTACH_MOUSE_SEQ,
+  CO_ATTACH_ALT_SCREEN_SEQ,
   type SessionLife
 } from '../terminal/terminal-config'
 import { useXtermVisualSettings } from '../terminal/useXtermVisualSettings'
@@ -3176,6 +3177,7 @@ export function TerminalNode({
           screen,
           cursor,
           coAttachMouse,
+          coAttachAltScreen,
           persistent,
           sessionHost,
           unavailable
@@ -3399,6 +3401,11 @@ export function TerminalNode({
               term.write('\r\n\x1b[90m── session restored (process ended by a restart) ──\x1b[0m\r\n')
             }
           } else if (replay === 'warm-attach') {
+            // A joiner's xterm never saw tmux's attach-time `\e[?1049h` (PtyCreateResult
+            // .coAttachAltScreen). Before the paint: entering the alt buffer clears the display.
+            // Not once a resync has superseded the seed: its repaint (`term.reset()` + the capture)
+            // may already have landed, and entering the alt buffer now would blank it.
+            if (coAttachAltScreen && !superseded) term.write(CO_ATTACH_ALT_SCREEN_SEQ)
             // tmux is attached to this client and paints it: the visible screen on attach, its own
             // history under the wheel. So there is nothing to hydrate — EXCEPT for a CO-ATTACH
             // JOINER, whose `screen` was captured inside `create()`: tmux only repaints on SIGWINCH,

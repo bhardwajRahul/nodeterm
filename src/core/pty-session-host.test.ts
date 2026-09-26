@@ -624,6 +624,19 @@ describe('PtyManager session-host contracts', () => {
     expect(backend.create).toHaveBeenCalledTimes(1)
   })
 
+  it('never tells a session-host joiner to enter the alternate screen (its scrollback is its history)', async () => {
+    backend.create.mockReturnValue(fakeSessionHostPty())
+    const m = await makeManager()
+    m.registerIpc()
+    const create = host.handlers[IPC.ptyCreate]
+    const options = { cols: 80, rows: 24, persistKey: 'node-alt-screen' }
+
+    await create(7, options)
+    const joined = (await create(8, options)) as { fresh: boolean; coAttachAltScreen?: boolean }
+    expect(joined.fresh).toBe(false) // it did join the live session…
+    expect(joined.coAttachAltScreen).toBeUndefined() // …but there is no tmux alt screen to restore
+  })
+
   it('leaves the live generation joinable when the confirmed backend kill rejects', async () => {
     const active = fakeSessionHostPty()
     backend.create.mockReturnValue(active)

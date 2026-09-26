@@ -272,6 +272,17 @@ export interface PtyCreateResult {
    */
   coAttachMouse?: boolean
   /**
+   * A TMUX-BACKED joiner must switch its fresh xterm to the ALTERNATE buffer before painting.
+   * tmux emits `\e[?1049h` to a client only at that client's own attach; a joiner (a renderer
+   * reload re-joins the same still-alive tmux client, and the kanban card modal is always a
+   * joiner) never sees it, so its xterm stayed on the NORMAL buffer: up to 10k lines of tmux's
+   * scrolled output piled up there and every output frame forced a layout (xterm's viewport
+   * resync) — measured 16.1% vs 7.3% total CPU for one terminal streaming 20 lines/s.
+   * Absent for plain-shell and session-host sessions: there the pty IS the shell and its
+   * normal-buffer scrollback is the only history it has.
+   */
+  coAttachAltScreen?: boolean
+  /**
    * This session is TMUX-BACKED (local or remote) — it survives losing this client, so killing our
    * pty client only detaches us and everything running in the session keeps going.
    *

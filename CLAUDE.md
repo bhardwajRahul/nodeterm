@@ -5235,6 +5235,16 @@ glow that says "this agent finished while you were away" is still on screen when
 look for it. `hud.css` is deliberately excluded: the notch HUD's window is never focused, so the
 shared gate would freeze it permanently rather than while nobody is looking.
 
+**The working glow is BOUNDED; the unread and attention glows are not.** The idle gate only helps an
+unfocused window, and an agent mid-turn in a FOCUSED one kept `nt-working-glow` looping for the
+whole turn — MEASURED (production build, M2, focused): one visible working node cost **+3 points
+total CPU and ~25 style recalcs/s** for as long as it ran. It now runs 4 cycles of 2.6 s (~10 s) and
+rests at `opacity: 0.7`, the same static-lit value the idle gate and Reduce Motion already hold it
+at; the keyframes start and end at 0.7, so the settle is seamless. A new turn re-adds `.working`,
+which restarts the pulse. Unread and attention stay infinite on purpose — they exist to pull the
+eye, and the idle gate covers the unfocused case. `styles.animation-gate.test.ts` pins the bounded
+shorthand, the resting opacity and the keyframe endpoints.
+
 **A camera move freezes the viewport's raster scale, and only for the move.** `onCanvasMoveStart`
 adds `canvas-camera-moving` to the flow wrapper in EVERY appearance (before the glass-only
 early-return — it is not a glass feature), and `.canvas-camera-moving .react-flow__viewport` sets

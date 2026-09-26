@@ -1630,8 +1630,10 @@ body,
 /* Working (agent mid-turn): a soft clay glow — the spinner's #d97757 — behind the node.
    Same opacity-pulse-on-wrapper-pseudo technique as the unread glow above (never animate
    box-shadow), but calmer: lower intensity, slower cycle, and it never fully disappears so
-   the node reads "alive" rather than "blinking". Mutually exclusive with .unread (isUnread
-   is false while working). Shadows only — the top border keeps the node's own color. */
+   the node reads "alive" rather than "blinking". Unlike its two siblings the pulse is BOUNDED:
+   four cycles mark "it just started working", then it rests lit at 0.7 for the rest of the turn.
+   Mutually exclusive with .unread (isUnread is false while working). Shadows only — the top
+   border keeps the node's own color. */
 .term-node.working {
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--state-working) 35%, transparent),
@@ -1649,17 +1651,23 @@ body,
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--state-working) 45%, transparent),
     0 0 22px 3px color-mix(in srgb, var(--state-working) 35%, transparent);
-  opacity: 0.25;
-  animation: nt-working-glow 2.6s ease-in-out infinite;
+  opacity: 0.7;
+  animation: nt-working-glow 2.6s ease-in-out 4;
   will-change: opacity;
 }
 
+/* Bounded (4 cycles, ~10 s) and resting at 0.7 — the static-lit value the idle gate and Reduce
+   Motion use. An infinite pulse kept the compositor at display rate for the whole turn (measured
+   +3 points CPU per visible working node, focused). A new turn re-adds `.working` and restarts it. */
 @keyframes nt-working-glow {
   0%,
   100% {
+    opacity: 0.7;
+  }
+  35% {
     opacity: 0.25;
   }
-  50% {
+  70% {
     opacity: 1;
   }
 }

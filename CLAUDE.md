@@ -2543,6 +2543,73 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   `readQuestions`), and only while the pane is in a dialog state. They send a `PermissionAnswer`
   through `answerPermission`; a refusal is a quiet retryable error pointing at the terminal. Plan's
   default button is `restore` — never auto. See docs/hook-reply-approvals.md.
+  **The thread look (2026-09-26, claude.ai-style)**: the user's message is a neutral rounded bubble
+  on the right (`term-chat__bubble`, a tint lift — never the blue accent), the assistant's is plain
+  full-width text with no bubble. One quiet action row per assistant TURN (`lib/chatThread.ts`
+  `assistantTurnEnds` — a turn is a run of consecutive assistant lines, so a tool-heavy turn gets one
+  row, not one per tool call), hidden until hover/focus and always shown on the latest turn: Copy (the
+  turn's TEXT parts as markdown source, through `window.nodeTerminal.clipboard` — the app channel,
+  which never rejects and bridges to execCommand in the browser) and a relative time from the new
+  optional `ChatMessage.at` (epoch ms from claude's ISO `timestamp`, set by the core parser on BOTH
+  the legacy and paged paths; absent when the line states none — never a made-up time). One
+  60-second `now` tick in ChatPanel drives every row's label. No thumbs / read-aloud / retry (no
+  terminal equivalent). `.term-chat__text` stays the markdown sink the link guard scopes to.
+  **The composer (2026-09-26, claude.ai-style)** is one rounded box — textarea on top, a toolbar
+  under it: "+" attach on the left; model label, muted effort label and a mic on the right (pure
+  decisions in `lib/chatComposer.ts`). Four rules: (1) **attach = paths in the DRAFT, resolved the
+  way a drop onto that node's terminal is** — the mount site passes `pathsForFiles` built on
+  `droppedPaths` with the node's own SSH scope (`dropProjectId` in TerminalNode; `spawn.ssh` in the
+  card modal), so an SSH node's file is uploaded to its HOST and the composer never grows a second
+  resolver; "+" / drop / file-or-screenshot paste all feed it, and nothing is ever sent. (2) **The
+  mic targets THIS composer's textarea, never the pane**: `nodeterm:dictate` carries a per-MOUNT
+  `composerId` (the canvas node and the card modal can both mount one session's composer),
+  `DictationTarget` gained `kind: 'chat-composer'`, and the overlay hands the take over
+  `nodeterm:chat-dictation` (`lib/chatComposerDictation.ts`), saying so if the composer closed
+  mid-take. (3) **The labels read the ContextMeter's store** (`useContextUsage` — ONE reader) and
+  a click TYPES the agent's own picker command (`/model`, `/effort`) through the SAME
+  `chatSendRefusal` gate as a message, re-read at click time, then flips to the terminal
+  (`onShowTerminal`); `sendText` must answer `=== true` to flip. Measured for claude only
+  (`composerPickerCommand`, via `capabilityAgentId`): any other agent shows no label, since a label
+  that opens nothing is a lie. Hidden when the model is unknown; effort hidden with it. (4) **Effort
+  was measured, not assumed** (Claude Code 2.1.283): read = the top-level `effort` the CLI writes on
+  every assistant record it sent with one (`...E!==void 0&&{effort:E}`; its own history reader
+  walks the same field; a transcript flips `medium`→`xhigh` on the first request after `/effort`);
+  change = `/effort` (a `local-jsx` picker, levels `low|medium|high|xhigh|max`). `parseLatestUsage`
+  takes it from the LATEST usage record only — never carried forward, a record without it means
+  that model takes no effort — and both context tails push on an effort-only change
+  (`ContextWindowUsage.effort`, optional: older hosts and other agents simply omit it). Like the
+  model, it lags until the next request. Narrow composers drop effort first, then the model
+  (`composerToolbarLayout`); "+" and the mic stay. No voice-conversation button: there is no
+  terminal equivalent. Surfaces: Desktop + Server Edition identical (dictation and uploads already
+  bridge — `files.saveUpload`, `speech.*`); SSH nodes upload to the host; kanban card modal shares
+  ChatPanel and wires both props; relay tabs keep the panel's existing refusal; mobile N/A.
+  Fix-round rules (same day): the composer is its OWN component (`nodes/ChatComposer.tsx`) so the
+  thread and the composer restyle independently. A label click is an explicit "go to the
+  terminal", so the flip FOCUSES the xterm whatever its entry state was
+  (`requestTerminalFocusOnExit(nodeId)` before the state change, consumed once by the node's
+  `useMdModeFocus` — TerminalNode and ModalTerminal both key it by node id). `/model` and `/effort`
+  open LOCAL pickers that fire NO hook, so the gate still reads `done` while one is on screen: the
+  composer holds a picker command in flight (ref + disabled/`aria-disabled` labels, and Enter is
+  swallowed) from click until the flip or failure — a second click would otherwise paste
+  `/model` + Enter INTO the picker, confirming its highlighted row. **Inherent limitation:**
+  returning to ⌘M while a picker is still open reads `done` too, so a chat send or a label click
+  there would type into it — the pane is not observable from here. Shortcut dictation (keyed chord
+  and hold-to-talk) targets the composer holding the caret before the selected terminal (the pane
+  under the view is hidden) via `composerFromElement`; the dispatcher offers keyed dictation in
+  that one text field (`isChatComposerTarget`). Both are keyed on the composer BOX
+  (`[data-chat-composer-id]`), never on the textarea's `term-chat__input` class — the plan
+  "Revise…" textarea and the question "Other" input share that class and sit outside the box. With
+  focus anywhere else inside `.term-chat` (those fields, the answer buttons) BOTH shortcut paths
+  refuse (`shortcutDictationFocus` → `refuse`): their fallback, the selected terminal, is the hidden
+  pane showing the very plan/question dialog, and typed characters landing there would move its
+  highlight or fill its "Other" field (the overlay types with `enter: false`, so nothing submits).
+  **Every mic that names only a NODE** — the terminal header mic, the card modal's header mic, the
+  Dock mic and the shortcut fallback (selected terminal / open card) — goes through
+  `dictationTargetForNode`: while that node's chat view is up (`.term-chat[data-chat-node-id]`) the
+  take goes to its mounted composer (the card modal's own when the modal is open for that node, so
+  a modal showing the LIVE terminal still targets it), a chat view with no composer refuses, and
+  otherwise it is the terminal as before. Every refusal says so in one `nodeterm:toast`
+  (`announceChatDictationRefusal`, naming the composer mic) instead of a silent dead key.
 - **Subagent visualization** (agents in `SUBAGENT_CAPABLE`) — `subagent-start`/`subagent-end`
   normalized events (from Claude's `PreToolUse`/`PostToolUse` on tool `Agent`/`Task`, correlated
   by `tool_use_id`) drive a transient `state/agentNodes.ts` store. Claude launches subagents
@@ -4375,7 +4442,8 @@ the Settings section and ShortcutsPanel start disagreeing about what a chord mea
     swallows its chord app-wide with the recorder reporting no conflict.
   - **Dictation has its own conflict bucket** (`conflictBucket` — `speech.dictation` is never in
     `global`), because it never competes at dispatch: the resolver skips it and its own keyed
-    listener claims the chord FIRST **in plain app focus only**, which is precedence, not ambiguity.
+    listener claims the chord FIRST **in plain app focus or the ⌘M composer box** (`isChatComposerTarget`),
+    which is precedence, not ambiguity.
     Overlap policy is deliberately asymmetric — the LOAD path PERMITS a shared chord (legacy
     settings.json files contain them and `sanitizeKeybindingOverrides` would otherwise strip the
     user's own binding with the migrated one), while the Settings UI REFUSES to create one

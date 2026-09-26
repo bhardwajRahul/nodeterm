@@ -48,6 +48,7 @@ import {
 } from '../../terminal/terminal-config'
 import { useXtermVisualSettings } from '../../terminal/useXtermVisualSettings'
 import {
+  nodeUploadScope,
   owningProjectId,
   resolveSshRemote,
   reportSshDrop,
@@ -113,7 +114,7 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch, covere
   const termRef = useRef<Terminal | null>(null)
   const coveredRef = useRef(covered)
   coveredRef.current = covered
-  useMdModeFocus(covered, () => termRef.current, () => hostRef.current?.closest('.kanban-modal'))
+  useMdModeFocus(covered, () => termRef.current, () => hostRef.current?.closest('.kanban-modal'), nodeId)
   const searchAddonRef = useRef<SearchAddon | null>(null)
   // The live pty session + its fit addon, reachable from OUTSIDE the lifecycle effect's closure —
   // the appearance effect below has to re-fit and re-REPORT this viewer's grid, and under co-attach
@@ -473,9 +474,7 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch, covere
     let paths: string[]
     if (spawn.sshRemoteTmux) {
       // Uploads go over the master this card's PTY runs on — its scope, not the project's.
-      const projectId = spawn.ssh
-        ? sshConnectionScope(spawn.ssh)
-        : useProjects.getState().activeProjectId
+      const projectId = nodeUploadScope(spawn.ssh)
       setUploading(true)
       try {
         paths = await droppedPaths(files, { sshRemoteTmux: true, projectId })

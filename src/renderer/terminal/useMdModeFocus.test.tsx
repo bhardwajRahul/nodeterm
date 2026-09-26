@@ -7,6 +7,7 @@ import { resolve } from 'node:path'
 import {
   focusXtermUnlessCovered,
   mayRestoreFocus,
+  requestTerminalFocusOnExit,
   terminalOwnsFileInput,
   useMdModeFocus,
   type FocusableTerm
@@ -39,12 +40,13 @@ let term: ReturnType<typeof fakeTerm> | null
 /** The node root: the terminal's textarea lives inside it, like a real `.term-node`. */
 let nodeRoot: HTMLDivElement
 
-function Harness({ mdMode }: { mdMode: boolean }) {
-  useMdModeFocus(mdMode, () => term, () => nodeRoot)
+function Harness({ mdMode, nodeId }: { mdMode: boolean; nodeId?: string }) {
+  useMdModeFocus(mdMode, () => term, () => nodeRoot, nodeId)
   return null
 }
 
-const render = (mdMode: boolean) => act(() => root.render(<Harness mdMode={mdMode} />))
+const render = (mdMode: boolean, nodeId?: string) =>
+  act(() => root.render(<Harness mdMode={mdMode} nodeId={nodeId} />))
 
 beforeEach(() => {
   host = document.createElement('div')
@@ -174,6 +176,63 @@ describe('focusXtermUnlessCovered', () => {
     const src = readFileSync(resolve(__dirname, '../components/kanban/ModalTerminal.tsx'), 'utf8').replace(/\r\n/g, '\n')
     expect(src).toMatch(/useMdModeFocus\(covered,/)
     expect(src).toMatch(/focusXtermUnlessCovered\(term, coveredRef\.current\)/)
+  })
+})
+
+describe('requestTerminalFocusOnExit (the ⌘M composer model / effort label)', () => {
+  it('focuses the terminal on exit even when it did NOT have focus on entry (⌘K / menu / board)', () => {
+    render(false, 'n1')
+    render(true, 'n1')
+    term!.calls.length = 0
+    requestTerminalFocusOnExit('n1')
+    render(false, 'n1')
+    expect(term!.calls).toEqual(['focus'])
+    expect(document.activeElement).toBe(term!.textarea)
+  })
+
+  it('wins over focus sitting elsewhere: the click that asked for it was the user choosing', () => {
+    render(false, 'n2')
+    render(true, 'n2')
+    const other = document.createElement('input')
+    document.body.appendChild(other)
+    other.focus()
+    requestTerminalFocusOnExit('n2')
+    render(false, 'n2')
+    expect(document.activeElement).toBe(term!.textarea)
+  })
+
+  it('is consumed once: the next ordinary exit is back on the restore rule', () => {
+    render(false, 'n3')
+    render(true, 'n3')
+    requestTerminalFocusOnExit('n3')
+    render(false, 'n3')
+    term!.textarea!.blur()
+    render(true, 'n3')
+    term!.calls.length = 0
+    render(false, 'n3')
+    expect(term!.calls).toEqual([])
+  })
+
+  it("answers only its own node's request", () => {
+    render(false, 'mine')
+    render(true, 'mine')
+    term!.calls.length = 0
+    requestTerminalFocusOnExit('someone-else')
+    render(false, 'mine')
+    expect(term!.calls).toEqual([])
+  })
+
+  it('both mount sites request focus before flipping, and both hooks are keyed by node id', () => {
+    // Source pins: TerminalNode and CardModal cannot be mounted here. The request must come
+    // BEFORE the state change, or the hook's exit transition runs first and misses it.
+    const read = (rel: string) => readFileSync(resolve(__dirname, rel), 'utf8').replace(/\r\n/g, '\n')
+    const node = read('../nodes/TerminalNode.tsx')
+    expect(node).toMatch(/useMdModeFocus\(mdMode, \(\) => termRef\.current, \(\) => rootRef\.current, id\)/)
+    expect(node).toMatch(/requestTerminalFocusOnExit\(id\)\s*\n\s*updateNodeData\(id, \(\) => \(\{ mdMode: false \}\)\)/)
+    const modal = read('../components/kanban/CardModal.tsx')
+    expect(modal).toMatch(/requestTerminalFocusOnExit\(session\.id\)\s*\n\s*setMdFor\(null\)/)
+    const viewer = read('../components/kanban/ModalTerminal.tsx')
+    expect(viewer).toMatch(/useMdModeFocus\(covered, [^\n]*, nodeId\)/)
   })
 })
 

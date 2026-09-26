@@ -179,7 +179,12 @@ import { coldSelfHealVerdict } from '../terminal/cold-self-heal'
 import { WakeInputBuffer } from '../terminal/wake-input-buffer'
 import { FindBar } from '../components/FindBar'
 import { TerminalMarkdownView } from './TerminalMarkdownView'
-import { focusXtermUnlessCovered, terminalOwnsFileInput, useMdModeFocus } from '../terminal/useMdModeFocus'
+import {
+  focusXtermUnlessCovered,
+  requestTerminalFocusOnExit,
+  terminalOwnsFileInput,
+  useMdModeFocus
+} from '../terminal/useMdModeFocus'
 import { canvasOwnsMarkdownChord } from '../lib/markdownChord'
 import { IconChat, IconChevronDown, IconChevronRight, IconClose, IconEye, IconEyeOff, IconGrid, IconMic, IconMoveTo, IconPlay, IconReload, IconSearch, IconSparkle } from '../components/icons'
 import { NodeLabels } from '../components/kanban/NodeLabels'
@@ -286,6 +291,16 @@ export const SLOW_REMOTE_SPAWN_NOTICE_MS = 1500
 export function sshConnectionScope(conn: SshConnection): string {
   const { activeProjectId, getProject } = useProjects.getState()
   return sshConnectionIdForProject(activeProjectId, conn, getProject(activeProjectId)?.ssh?.server)
+}
+
+/**
+ * Which ControlMaster a node's file uploads go over: its OWN connection's scope (for an attached
+ * node, the host attachment — not the local project), else the active project. ONE definition for
+ * the terminal drop, the card modal's live viewer and the ⌘M composer's attach, so the three can
+ * never upload one file to two different machines.
+ */
+export function nodeUploadScope(ssh: SshConnection | undefined): string {
+  return ssh ? sshConnectionScope(ssh) : useProjects.getState().activeProjectId
 }
 
 /**
@@ -5108,6 +5123,8 @@ export function TerminalNode({
     const rt = e.relatedTarget as Node | null
     if (!rt || !(e.currentTarget as HTMLElement).contains(rt)) setDropping(false)
   }
+  // Uploads go over the master this node's PTY runs on (`nodeUploadScope`).
+  const dropProjectId = (): string => nodeUploadScope(data.ssh as SshConnection | undefined)
   /**
    * Files arriving by DROP or by PASTE become paths in the terminal — what a native terminal does
    * on a drop, and the only thing a shell (or an agent reading its prompt) can act on. Shared so
@@ -5127,12 +5144,7 @@ export function TerminalNode({
       // Remote terminal: uploading over the ControlMaster takes seconds and pastes nothing until
       // it's done, so show an overlay while it runs — without it a drop looks like it silently did
       // nothing. (The upload + REMOTE-path resolution itself lives in the shared droppedPaths.)
-      // Uploads go over the master this node's PTY runs on — its scope, which for an attached
-      // node is the host attachment, not the (local) project.
-      const dropConn = data.ssh as SshConnection | undefined
-      const projectId = dropConn
-        ? sshConnectionScope(dropConn)
-        : useProjects.getState().activeProjectId
+      const projectId = dropProjectId()
       if (uploadNoteTimer.current) clearTimeout(uploadNoteTimer.current)
       setUploadNote({
         text: `Uploading ${files.length === 1 ? files[0].name : `${files.length} files`}…`,
@@ -5337,7 +5349,7 @@ export function TerminalNode({
 
   // The ⌘M face (output view or ChatPanel) covers the xterm: blur it on entry so keystrokes stop
   // reaching a pane nobody can see, and hand focus back on exit only if it had it on entry.
-  useMdModeFocus(mdMode, () => termRef.current, () => rootRef.current)
+  useMdModeFocus(mdMode, () => termRef.current, () => rootRef.current, id)
   // Full-scrollback capture for the output view (TerminalMarkdownView owns the lifecycle: capture on
   // mount, ↻, stale-answer guard, line cap, scroll-to-latest). Session-bound, so a relay tab
   // captures the PEER's pane.
@@ -6070,6 +6082,18 @@ export function TerminalNode({
                 // system-root one. Spawn/env identity is unaffected — that stays creation-time.
                 accountId={accountForReads}
                 agentId={agentId}
+                // The composer's attach resolves files exactly as a drop onto THIS terminal does.
+                pathsForFiles={(files) =>
+                  droppedPaths(files, {
+                    sshRemoteTmux: !!data.sshRemoteTmux,
+                    projectId: data.sshRemoteTmux ? dropProjectId() : ''
+                  })
+                }
+                onShowTerminal={() => {
+                  // An explicit "go to the terminal": the picker just opened there needs the keyboard.
+                  requestTerminalFocusOnExit(id)
+                  updateNodeData(id, () => ({ mdMode: false }))
+                }}
               />
             </Suspense>
           ) : (

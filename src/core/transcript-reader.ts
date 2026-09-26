@@ -135,13 +135,20 @@ export async function readTranscriptLines(filePath: string): Promise<TranscriptL
 // correlated back onto its tool part by tool_use_id. User lines that carry only tool_results
 // (no prose) are NOT rendered as bubbles — they're tool output, attached to the tool instead.
 //
-// `paged` switches on the three things only a paged read needs (and the legacy result must NOT
-// grow, byte for byte): a `key` per message (its line's absolute byte offset), the `tool_use` id on
+// `paged` switches on the three things only a paged read needs (the legacy result grows only by
+// the optional `at` both paths carry): a `key` per message (its line's absolute byte offset), the `tool_use` id on
 // each tool part, and the list of results whose tool was not among these lines.
 interface ChatRecordsOut {
   messages: ChatMessage[]
   unmatched: Map<string, string>
 }
+/** A transcript line's ISO `timestamp` as epoch ms; undefined when absent or not a date string. */
+function lineTime(v: unknown): number | undefined {
+  if (typeof v !== 'string' || !v) return undefined
+  const t = Date.parse(v)
+  return Number.isFinite(t) ? t : undefined
+}
+
 function parseChatRecords(
   records: Iterable<{ raw: string; offset: number }>,
   paged: boolean
@@ -149,17 +156,22 @@ function parseChatRecords(
   const messages: ChatMessage[] = []
   const unmatched = new Map<string, string>()
   const toolById = new Map<string, Extract<ChatPart, { kind: 'tool' }>>()
+  let at: number | undefined
   const push = (m: ChatMessage, offset: number): void => {
-    messages.push(paged ? { ...m, key: offset } : m)
+    // `at` rides BOTH paths (additive): the time the line was written, for the thread's relative
+    // timestamp. Absent when the line states none — never a made-up time.
+    const withAt = at === undefined ? m : { ...m, at }
+    messages.push(paged ? { ...withAt, key: offset } : withAt)
   }
   for (const { raw, offset } of records) {
     if (!raw.trim()) continue
-    let o: { type?: string; message?: { content?: unknown } }
+    let o: { type?: string; timestamp?: unknown; message?: { content?: unknown } }
     try {
       o = JSON.parse(raw)
     } catch {
       continue
     }
+    at = lineTime(o.timestamp)
     const content = o.message?.content
     if (o.type === 'assistant' && Array.isArray(content)) {
       const parts: ChatPart[] = []

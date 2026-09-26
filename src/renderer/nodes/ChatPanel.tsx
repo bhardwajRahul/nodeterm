@@ -1,11 +1,11 @@
 import { TEXT_NOT_SUBMITTED } from '@shared/text-delivery'
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { renderMarkdown } from '../lib/markdown'
 import { useAgentStatus } from '../state/agentStatus'
 import { useSession } from '../session/session'
 import { chipFor } from '../lib/keybindingOverrides'
 import { chatComposerPlaceholder, chatSendRefusal } from '../lib/chatSendGate'
-import { chatAgentLabel, chatKeyAction, isNearBottom, shouldFollowOnLoad, toolCardTitle } from '../lib/chatPanel'
+import { chatAgentLabel, isNearBottom, shouldFollowOnLoad, toolCardTitle } from '../lib/chatPanel'
 import { useSettings } from '../state/settings'
 import {
   CHAT_OLDER_PAGE_BYTES,
@@ -24,6 +24,9 @@ import { ChatLoadingStatus } from './ChatPanelFallback'
 import { activeAnswerCard } from '../lib/chatAnswer'
 import { PlanAnswerControls, QuestionAnswerControls } from './ChatAnswerControls'
 import type { PermissionAnswer } from '@shared/agents/permission-answer'
+import { ChatComposer } from './ChatComposer'
+import { ChatTurnActions } from './ChatTurnActions'
+import { assistantTurnEnds } from '../lib/chatThread'
 
 // Memoized bubble: marked+DOMPurify re-ran for EVERY message on each ChatPanel render (each
 // turn-finish reload, each keystroke re-render). Text is stable per message, so cache per text.
@@ -56,6 +59,21 @@ interface ChatPanelProps {
   title?: string
   /** Rendered at the right of the bar in place of the ⌘M exit hint. */
   hint?: string
+  /**
+   * Resolve attached files (the composer's "+", a drop, a pasted file or screenshot) to the paths
+   * the agent should read — the SAME resolution a drop onto the node's terminal uses
+   * (`droppedPaths`), supplied by the mount site because only it knows the node's scope (an SSH
+   * node uploads to its host over the master it runs on; a local one uses the local path, or the
+   * uploads dir for clipboard bytes). Absent = no attach affordance.
+   */
+  pathsForFiles?: (files: File[]) => Promise<string[]>
+  /**
+   * Leave the ⌘M view for the node's terminal. The toolbar's model / effort labels type the
+   * agent's own picker command (`/model`, `/effort`) into the pane and then call this, so the user
+   * sees the picker they just opened. Absent = no labels (a label that opens a picker nobody can
+   * see is worse than none).
+   */
+  onShowTerminal?: () => void
 }
 
 /**
@@ -102,7 +120,9 @@ export function ChatPanel({
   agentId,
   readOnly,
   title,
-  hint
+  hint,
+  pathsForFiles,
+  onShowTerminal
 }: ChatPanelProps) {
   // This node's core api (stable for the session — the chat transcript and the tmux session
   // both live on the core this panel's project belongs to).
@@ -500,6 +520,8 @@ export function ChatPanel({
     setInput('')
   }, [api, input, nodeId, agentId])
 
+  const onWriteRefused = useCallback(() => setReadonly(true), [])
+
   // Answer the held request through core, which validates the answer against the pending request
   // file and builds what the hook prints. The ticket is re-checked against the store at SEND time:
   // a hold that ended (answered in the TUI, timed out, replaced) while the user was choosing must
@@ -513,21 +535,25 @@ export function ChatPanel({
     [api, nodeId]
   )
 
-  const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    // Shift+Enter falls through to the textarea's own newline; an IME commit is not a send.
-    const action = chatKeyAction({
-      key: e.key,
-      shiftKey: e.shiftKey,
-      isComposing: e.nativeEvent.isComposing || e.keyCode === 229
-    })
-    if (action !== 'send') return
-    e.preventDefault()
-    void send()
-  }
-
   // Whatever the markdown/chat toggle is bound to; '' when unbound, in which case the bar names
   // the action instead of promising a chord that never fires.
   const mdChip = chipFor('node.toggleMarkdown')
+
+  // The thread's claude.ai look (lib/chatThread.ts): one action row per assistant TURN, keyed by
+  // the turn's last message. `now` is ONE clock for every row's relative time, ticked once a minute
+  // (a per-row timer would be a timer per turn for a label that changes once a minute).
+  const turnEnds = useMemo(() => assistantTurnEnds(messages), [messages])
+  // The last key IS the latest turn end: `assistantTurnEnds` inserts in thread order.
+  const latestTurnEnd = useMemo(() => {
+    let last = -1
+    for (const k of turnEnds.keys()) last = k
+    return last
+  }, [turnEnds])
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 60_000)
+    return () => clearInterval(t)
+  }, [])
 
   // A tail that yielded no message but has history behind it (all-metadata records, or a window a
   // single huge record filled) is STILL LOADING — the panel pages back by itself from here. Saying
@@ -540,7 +566,9 @@ export function ChatPanel({
   const showEmpty = messages.length === 0 && loadState !== 'loading' && !(loadState === 'ok' && historyPending)
 
   return (
-    <div className="term-chat nodrag nowheel">
+    // `data-chat-node-id`: which node's chat view this is — the mics that name only a node ask it
+    // (lib/chatComposerDictation.ts `dictationTargetForNode`) so a take never reaches the hidden pane.
+    <div className="term-chat nodrag nowheel" data-chat-node-id={nodeId}>
       <div className="term-chat__bar">
         <span>{title ?? 'Chat'}</span>
         <span className="term-chat__bar-end">
@@ -595,7 +623,10 @@ export function ChatPanel({
           // Keyed by the source line's byte offset: a prepended page does not re-key (and so does
           // not re-render) a single existing bubble. Unkeyed ones (grok, the optimistic sent
           // bubble) fall back to their position.
-          <div key={m.key !== undefined ? `k${m.key}` : `i${i}`} className={`term-chat__msg term-chat__msg--${m.role}`}>
+          <div
+            key={m.key !== undefined ? `k${m.key}` : `i${i}`}
+            className={`term-chat__msg term-chat__msg--${m.role}${m.role === 'user' ? ' term-chat__bubble' : ''}`}
+          >
             {m.parts.map((p, j) =>
               p.kind === 'text' ? (
                 <MarkdownText key={j} text={p.text} />
@@ -642,6 +673,14 @@ export function ChatPanel({
                 </details>
               )
             )}
+            {turnEnds.has(i) && (
+              <ChatTurnActions
+                copyText={turnEnds.get(i)!.copyText}
+                at={turnEnds.get(i)!.at}
+                now={now}
+                latest={i === latestTurnEnd}
+              />
+            )}
           </div>
         ))}
         {activity && (
@@ -661,12 +700,14 @@ export function ChatPanel({
         )}
       </div>
       {!readOnly && (
-      <div className="term-chat__compose">
-        <textarea
-          className="term-chat__input"
+        <ChatComposer
+          nodeId={nodeId}
+          sessionId={sessionId}
+          agentId={agentId}
+          agentLabel={agentLabel}
           value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={onKeyDown}
+          onChange={setInput}
+          onSend={() => void send()}
           placeholder={chatComposerPlaceholder({
             readonly,
             refusal,
@@ -675,9 +716,11 @@ export function ChatPanel({
             answerOnCard: answerCard !== null
           })}
           disabled={readonly || refusal !== null}
-          rows={2}
+          onWriteRefused={onWriteRefused}
+          sendUnconfirmed={optimistic}
+          pathsForFiles={pathsForFiles}
+          onShowTerminal={onShowTerminal}
         />
-      </div>
       )}
     </div>
   )

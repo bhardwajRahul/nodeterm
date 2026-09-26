@@ -54,3 +54,51 @@ describe('nt-spinner', () => {
     expect(mine).not.toMatch(/\.nt-spinner\s*{[^}]*(display:\s*none|visibility:\s*hidden|opacity:\s*0;)/)
   })
 })
+
+describe('⌘M thread: claude.ai look', () => {
+  it('the user message is a neutral rounded bubble on the right — not the blue accent', () => {
+    const user = ruleBody('.term-chat__msg--user')
+    expect(user).toMatch(/align-self:\s*flex-end;/)
+    expect(user).not.toMatch(/--accent/)
+    expect(user).toMatch(/max-width:\s*80%;/)
+    expect(user).toMatch(/border-radius:\s*\d+px;/)
+    expect(user).toMatch(/background:/)
+  })
+
+  it('the assistant message has no bubble: full width, no fill, roomy line height', () => {
+    const a = ruleBody('.term-chat__msg--assistant')
+    expect(a).toMatch(/max-width:\s*none;/)
+    expect(a).toMatch(/background:\s*none;/)
+    expect(a).toMatch(/line-height:\s*1\.6/)
+  })
+
+  it('the action row is hidden until hover/focus, and always shown on the latest turn', () => {
+    expect(ruleBody('.term-chat__actions')).toMatch(/opacity:\s*0;/)
+    expect(CSS).toMatch(/\.term-chat__msg:hover \.term-chat__actions,\s*\n?\s*\.term-chat__actions:focus-within,\s*\n?\s*\.term-chat__actions--latest\s*{[^}]*opacity:\s*1;/)
+  })
+})
+
+describe('the shared .term-chat__input (plan "Revise…", question "Other") keeps a visible field', () => {
+  it('the base rule is a bordered, padded, tinted field', () => {
+    const base = ruleBody('.term-chat__input')
+    expect(base).toMatch(/padding:\s*8px;/)
+    expect(base).toMatch(/border:\s*1px solid/)
+    expect(base).toMatch(/border-radius:\s*8px;/)
+    expect(base).toMatch(/background:\s*rgba\(var\(--tint-rgb\)/)
+  })
+
+  it('it shows focus (the accent border) — a borderless reset here was an a11y regression', () => {
+    expect(ruleBody('.term-chat__input:focus')).toMatch(/border-color:\s*var\(--accent\);/)
+  })
+
+  it('only the COMPOSER textarea drops its border (the box around it owns the focus ring)', () => {
+    const composer = ruleBody('.term-chat__composer-input')
+    expect(composer).toMatch(/border:\s*none;/)
+    expect(composer).toMatch(/background:\s*transparent;/)
+    expect(ruleBody('.term-chat__composer:focus-within')).toMatch(/border-color:\s*var\(--accent\);/)
+  })
+
+  it('the last paragraph of an assistant message has no trailing margin (specificity over the generic rule)', () => {
+    expect(ruleBody('.term-chat__msg--assistant .term-chat__text > p:last-child')).toMatch(/margin-bottom:\s*0;/)
+  })
+})

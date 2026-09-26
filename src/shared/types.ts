@@ -2736,6 +2736,12 @@ export interface ContextWindowUsage {
   usedPercent: number
   /** Model id from the transcript, or null if not seen yet. */
   model: string | null
+  /**
+   * Reasoning effort of the latest request, as Claude Code records it on the transcript's assistant
+   * record (`low`/`medium`/`high`/`xhigh`/`max` on 2.1.283). Absent = not recorded: another agent,
+   * an older host or CLI, or a model that takes no effort. Shown by the ⌘M composer's toolbar.
+   */
+  effort?: string
   updatedAt: number
 }
 
@@ -2824,6 +2830,12 @@ export interface ChatMessage {
    * the legacy read and on grok (whose reader does not page).
    */
   key?: number
+  /**
+   * When the transcript line was written (epoch ms, from claude's ISO `timestamp`). Set on BOTH
+   * read paths; absent when the line states none (grok, older records). The ⌘M thread shows it as a
+   * relative time under an assistant message.
+   */
+  at?: number
 }
 
 /** A `tool_result` whose `tool_use` was not in the same page (it lives in an OLDER one). */

@@ -157,6 +157,13 @@ import { WelcomeScreen } from '../components/WelcomeScreen'
 import { CloneRepoDialog } from '../components/CloneRepoDialog'
 import { markMobileLaunchSeen, shouldShowMobileLaunch } from '../lib/mobileLaunch'
 import type { DictationTarget } from '../components/DictationOverlay'
+import {
+  announceChatDictationRefusal,
+  composerFromElement,
+  dictationTargetForNode,
+  dictationTargetFromRequest,
+  shortcutDictationFocus
+} from '../lib/chatComposerDictation'
 import { describeOs, REPO_URL } from '../lib/bugReport'
 import { shouldReleasePaneFocus } from '../lib/paneFocus'
 import {
@@ -2382,23 +2389,50 @@ export function Canvas() {
   // The node whose kanban card modal is open (null = none). The dictation shortcut targets THIS
   // when set, since no canvas node is selected while the board covers the canvas.
   const kanbanModalNodeRef = useRef<string | null>(null)
+  // The ⌘M chat composer holding the caret, as a dictation target (lib/chatComposerDictation.ts).
+  // Both shortcut paths ask it FIRST: with the caret in a composer, the selected terminal is the
+  // hidden pane under the view, and the take belongs in the draft being typed.
+  const focusedComposerDictationTarget = (): DictationTarget | null => {
+    const c = composerFromElement(document.activeElement)
+    if (!c) return null
+    const n = nodesRef.current.find((x) => x.id === c.nodeId)
+    return dictationTargetFromRequest(c, (n?.data.title as string) || 'Untitled')
+  }
+  // A take for a NODE (a mic that names one, or a shortcut's fallback): its composer while its ⌘M
+  // chat view is up, 'refuse' for a chat view with no composer, else its terminal as before.
+  const nodeDictationTarget = (nodeId: string, title: string): DictationTarget | 'refuse' =>
+    dictationTargetForNode(nodeId, title, { inCardModal: kanbanModalNodeRef.current === nodeId }) ?? 'refuse'
   const toggleDictation = useCallback(() => {
     setDictationOpen((open) => {
       if (open) {
         setDictationStopSignal((n) => n + 1)
         return true
       }
+      // Focus in a ⌘M chat view but outside its composer: the fallback below would target the
+      // hidden pane showing the dialog those controls answer (shortcutDictationFocus).
+      if (shortcutDictationFocus(document.activeElement) === 'refuse') {
+        announceChatDictationRefusal()
+        return false
+      }
+      const composer = focusedComposerDictationTarget()
+      if (composer) {
+        setDictationTarget(composer)
+        setDictationNonce((n) => n + 1)
+        return true
+      }
       // A kanban card modal open over the board wins (nothing on the canvas is selected then);
-      // otherwise fall back to the selected canvas terminal.
+      // otherwise fall back to the selected canvas terminal — through `nodeDictationTarget`, which
+      // sends the take to that node's composer (or refuses) while its chat view hides the pane.
       const modalId = kanbanModalNodeRef.current
-      const target = modalId
+      const node = modalId
         ? nodesRef.current.find((n) => n.id === modalId && n.type === 'terminal')
         : nodesRef.current.find((n) => n.selected && n.type === 'terminal')
-      setDictationTarget(
-        target
-          ? { kind: 'terminal', nodeId: target.id, title: (target.data.title as string) || 'Untitled' }
-          : null
-      )
+      const target = node ? nodeDictationTarget(node.id, (node.data.title as string) || 'Untitled') : null
+      if (target === 'refuse') {
+        announceChatDictationRefusal()
+        return false
+      }
+      setDictationTarget(target)
       setDictationNonce((n) => n + 1)
       return true
     })
@@ -4457,15 +4491,23 @@ export function Canvas() {
   // instance mounts fresh and starts recording into the new target immediately.
   useEffect(() => {
     const onDictate = (e: Event): void => {
-      const d = (e as CustomEvent<{ nodeId: string }>).detail
+      // `composerId` = the mic in a ⌘M chat composer: the take goes into that composer's textarea
+      // (lib/chatComposerDictation.ts), not the pane. Absent = the header mic, unchanged.
+      const d = (e as CustomEvent<{ nodeId: string; composerId?: string }>).detail
       if (!d?.nodeId) return
       const n = nodesRef.current.find((x) => x.id === d.nodeId)
       if (!n) return
-      setDictationTarget({
-        kind: 'terminal',
-        nodeId: n.id,
-        title: (n.data.title as string) || 'Untitled'
-      })
+      const title = (n.data.title as string) || 'Untitled'
+      // A bare `{nodeId}` (the terminal header mic, the card modal's header mic) while that node's
+      // chat view is up must not type into the hidden pane: its composer takes it, or it is refused.
+      const target = d.composerId
+        ? dictationTargetFromRequest({ nodeId: n.id, composerId: d.composerId }, title)
+        : nodeDictationTarget(n.id, title)
+      if (target === 'refuse') {
+        announceChatDictationRefusal()
+        return
+      }
+      setDictationTarget(target)
       setDictationOpen(true)
       setDictationNonce((prev) => prev + 1)
     }
@@ -5050,18 +5092,22 @@ export function Canvas() {
         if (e.repeat) return
         if (!isModifierEventKey(e.key)) return
         if (!chordHeld(e, combo, isMac)) return
+        // Same refusal as the keyed path: hold-to-talk has no typing guard, so with focus on a
+        // plan/question answer control it would otherwise dictate into the hidden dialog pane.
+        if (shortcutDictationFocus(document.activeElement) === 'refuse') {
+          announceChatDictationRefusal()
+          return
+        }
+        const sel = nodesRef.current.find((n) => n.selected && n.type === 'terminal')
+        const composer = focusedComposerDictationTarget()
+        const target = composer ?? (sel ? nodeDictationTarget(sel.id, (sel.data.title as string) || 'Untitled') : null)
+        if (target === 'refuse') {
+          announceChatDictationRefusal()
+          return
+        }
         armed = true
         heldSince = Date.now()
-        const sel = nodesRef.current.find((n) => n.selected && n.type === 'terminal')
-        setDictationTarget(
-          sel
-            ? {
-                kind: 'terminal',
-                nodeId: sel.id,
-                title: (sel.data.title as string) || 'Untitled'
-              }
-            : null
-        )
+        setDictationTarget(target)
         setDictationNonce((n) => n + 1)
         setDictationOpen(true)
         return

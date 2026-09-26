@@ -178,6 +178,19 @@ describe('parseChatWindow — pure window parsing', () => {
     const r = parseChatWindow(file.subarray(start), start)
     expect(r.messages).toEqual([])
     expect(r.olderCursor).toBe(start) // strictly older than the window end → paging progresses
+    // …and SAYS so, explicitly: the reader grows the window on this flag instead of skipping the
+    // line (a pasted screenshot's user record is routinely bigger than a whole page).
+    expect(r.noCompleteLine).toBe(true)
+  })
+
+  it('noCompleteLine is false whenever the window holds a complete line, or starts at 0', () => {
+    const l1 = said('user', 'x'.repeat(50))
+    const l2 = said('assistant', 'kept')
+    const file = Buffer.from(l1 + l2)
+    expect(parseChatWindow(file.subarray(10), 10).noCompleteLine).toBe(false)
+    expect(parseChatWindow(file, 0).noCompleteLine).toBe(false)
+    // A window that is ONE line from the very start of the file is complete, not oversized.
+    expect(parseChatWindow(Buffer.from(l1), 0).noCompleteLine).toBe(false)
   })
 
   it('pages stitched together equal the unpaged parse, with no line lost or duplicated', () => {

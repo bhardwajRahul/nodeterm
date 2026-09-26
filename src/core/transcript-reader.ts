@@ -218,6 +218,14 @@ export interface ChatWindowParse {
   messages: ChatMessage[]
   olderCursor: number | null
   unmatchedResults: ChatCarriedToolResult[]
+  /**
+   * The window (not starting at 0) held no complete line: one record is bigger than the whole
+   * window. Explicit rather than inferred from "no messages", because a window of complete lines
+   * can legitimately yield no messages (metadata-only records). The reader (`readChatPage`) GROWS
+   * the window on this flag — a pasted screenshot is routinely bigger than a page — and only past
+   * the 5 MB cap takes the `olderCursor` below and skips the record. Never sent over the wire.
+   */
+  noCompleteLine: boolean
 }
 
 /**
@@ -237,9 +245,10 @@ export interface ChatWindowParse {
  * multi-byte character cut by the window edge only ever lands in the dropped partial line (each
  * kept line is decoded on its own, from newline to newline).
  *
- * A line longer than the whole window leaves no complete line in it. `olderCursor` is then
- * `bufStart` — strictly older than the window end — so paging keeps moving and that one oversized
- * record is skipped. Answering the window end instead would ask for the identical window forever.
+ * A line longer than the whole window leaves no complete line in it: `noCompleteLine` is set, and
+ * `olderCursor` is `bufStart` — strictly older than the window end, so a caller that gives up
+ * (`readChatPage`, only once the window is already at the 5 MB cap) keeps paging and skips that one
+ * record. Answering the window end instead would ask for the identical window forever.
  */
 export function parseChatWindow(buf: Buffer, bufStart: number): ChatWindowParse {
   const end = bufStart + buf.length
@@ -248,7 +257,7 @@ export function parseChatWindow(buf: Buffer, bufStart: number): ChatWindowParse 
   if (bufStart > 0) {
     const nl = buf.indexOf(0x0a)
     if (nl < 0 || bufStart + nl + 1 >= end) {
-      return { messages: [], olderCursor: bufStart, unmatchedResults: [] }
+      return { messages: [], olderCursor: bufStart, unmatchedResults: [], noCompleteLine: true }
     }
     from = nl + 1
     olderCursor = bufStart + from
@@ -264,7 +273,8 @@ export function parseChatWindow(buf: Buffer, bufStart: number): ChatWindowParse 
   return {
     messages,
     olderCursor,
-    unmatchedResults: [...unmatched].map(([id, result]) => ({ id, result }))
+    unmatchedResults: [...unmatched].map(([id, result]) => ({ id, result })),
+    noCompleteLine: false
   }
 }
 

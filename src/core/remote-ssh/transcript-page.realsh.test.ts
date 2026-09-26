@@ -10,6 +10,11 @@ import os from 'os'
 import path from 'path'
 import { parseTranscriptPage, transcriptPageCommand } from './transcript-window'
 import { parseChatWindow } from '../transcript-reader'
+import { fakePlatform } from '../platform-fake'
+import { initPlatform, resetPlatformForTests } from '../platform'
+import { registerTranscriptIpc } from '../transcript-ipc'
+import { IPC } from '../../shared/ipc'
+import type { ChatTranscriptResult } from '../../shared/types'
 
 let dir: string
 beforeAll(() => {
@@ -94,5 +99,37 @@ describe('transcriptPageCommand under /bin/sh', () => {
     const got = page(evil, null, 65536)
     expect(got.data.toString()).toBe('hello\n')
     expect(fs.existsSync(marker)).toBe(false)
+  })
+})
+
+// The whole remote leg of a paged read — core's `readChatPage` driving the REAL generated command —
+// on the case that used to lose data: a final line bigger than the page (a pasted screenshot). The
+// tail window holds no complete line, and core must grow it over ssh rather than skip the record.
+describe('paged chat read over a real /bin/sh — a final line bigger than the window', () => {
+  afterAll(() => resetPlatformForTests())
+
+  it('the 300 KB last record is in the first (tail) page', async () => {
+    const small = JSON.stringify({ type: 'user', message: { content: 'look at this' } })
+    const big = JSON.stringify({ type: 'user', message: { content: `IMG ${'Q'.repeat(300 * 1024)}` } })
+    const p = write('screenshot.jsonl', `${small}\n${big}\n`)
+    const f = fakePlatform()
+    initPlatform(f)
+    const asked: number[] = []
+    registerTranscriptIpc({
+      readRemotePage: async (_q, pg) => {
+        asked.push(pg.maxBytes)
+        const w = page(p, pg.before, pg.maxBytes)
+        return { ok: true, data: w.data, start: w.start }
+      }
+    })
+    const res = (await f.handlers[IPC.chatReadTranscript](
+      '46b36ce2-dd77-4f5e-a89e-4a0e831e83df', '/srv', undefined, 'nt-1', undefined, { maxBytes: 65536 }
+    )) as ChatTranscriptResult
+    expect(res.found).toBe(true)
+    const texts = res.messages.map((m) => (m.parts[0] as { text: string }).text)
+    expect(texts.at(-1)?.startsWith('IMG QQQ')).toBe(true)
+    expect(texts.at(-1)?.length).toBe(4 + 300 * 1024)
+    expect(asked[0]).toBe(65536)
+    expect(asked.length).toBeGreaterThan(1)
   })
 })

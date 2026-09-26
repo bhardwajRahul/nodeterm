@@ -327,6 +327,39 @@ describe('registerTranscriptIpc — paged chat reads', () => {
     expect(new Set(all.map((m) => m.key)).size).toBe(1000)
   })
 
+  // A pasted screenshot is a `type:user` line carrying base64 image data, routinely far bigger than
+  // one page (measured on a real host: 378 lines > 256 KB in 30 days, 133 of the > 512 KB ones
+  // image-bearing user records). A window with no complete line in it must GROW, not skip it.
+  it('pages back THROUGH a line bigger than the window — the big record is shown, not skipped', async () => {
+    const big = userLine(`screenshot ${'i'.repeat(600 * 1024)}`)
+    writeTranscript(lines(userLine('before'), big, assistantLine('after 1'), assistantLine('after 2')))
+    registerTranscriptIpc()
+    const seen: string[] = []
+    let res = await paged({ maxBytes: 65536 })
+    for (let guard = 0; guard < 50; guard++) {
+      seen.unshift(...res.messages.map((m) => (m.parts[0] as { text: string }).text.slice(0, 10)))
+      if (res.olderCursor === null || res.olderCursor === undefined) break
+      res = await paged({ before: res.olderCursor, maxBytes: 65536 })
+    }
+    expect(seen).toEqual(['before', 'screenshot', 'after 1', 'after 2'])
+    // The internal flag never leaks onto the wire.
+    expect(res).not.toHaveProperty('noCompleteLine')
+  })
+
+  it('a line bigger than the 5 MB cap is the ONLY thing ever skipped, and paging still ends', async () => {
+    const huge = userLine(`h${'z'.repeat(5 * 1024 * 1024 + 10)}`)
+    writeTranscript(lines(userLine('oldest'), huge, assistantLine('newest')))
+    registerTranscriptIpc()
+    const seen: string[] = []
+    let res = await paged({ maxBytes: 65536 })
+    for (let guard = 0; guard < 50; guard++) {
+      seen.unshift(...res.messages.map((m) => (m.parts[0] as { text: string }).text))
+      if (res.olderCursor === null || res.olderCursor === undefined) break
+      res = await paged({ before: res.olderCursor, maxBytes: 65536 })
+    }
+    expect(seen).toEqual(['oldest', 'newest'])
+  })
+
   it('an unresolvable transcript is still not-found, with no cursor to follow', async () => {
     registerTranscriptIpc()
     expect(await paged({})).toEqual({ messages: [], found: false, olderCursor: null, unmatchedResults: [] })
@@ -382,6 +415,43 @@ describe('registerTranscriptIpc — paged chat reads', () => {
       writeTranscript(lines(assistantLine('the LOCAL machine')))
       registerTranscriptIpc({ readRemotePage: async () => ({ ok: false }) })
       expect(await paged({}, 'nt-1')).toEqual({
+        messages: [],
+        found: false,
+        olderCursor: null,
+        unmatchedResults: []
+      })
+    })
+
+    it('grows a window that holds no complete line by re-asking the HOST for the same end', async () => {
+      const body = Buffer.from(lines(userLine('small'), userLine(`img ${'b'.repeat(300 * 1024)}`)))
+      const asked: Array<{ before: number | null; maxBytes: number }> = []
+      registerTranscriptIpc({
+        readRemotePage: async (_q, page) => {
+          asked.push(page)
+          const end = page.before === null ? body.length : page.before
+          const ws = Math.max(0, end - page.maxBytes)
+          const start = ws > 0 ? ws - 1 : 0
+          return { ok: true, data: body.subarray(start, end), start }
+        }
+      })
+      const res = await paged({ maxBytes: 65536 }, 'nt-1')
+      expect(asked.map((a) => a.maxBytes)).toEqual([65536, 262144, 1048576])
+      expect(asked.every((a) => a.before === null)).toBe(true)
+      expect(res.messages.map((m) => (m.parts[0] as { text: string }).text.slice(0, 5))).toEqual(['small', 'img b'])
+      expect(res.olderCursor).toBeNull()
+    })
+
+    it('a failed host read while growing is not-found — never the skipped-line answer', async () => {
+      const body = Buffer.from(lines(userLine(`img ${'b'.repeat(300 * 1024)}`)))
+      let n = 0
+      registerTranscriptIpc({
+        readRemotePage: async (_q, page) => {
+          if (n++ > 0) return { ok: false }
+          const start = body.length - page.maxBytes - 1
+          return { ok: true, data: body.subarray(start), start }
+        }
+      })
+      expect(await paged({ maxBytes: 65536 }, 'nt-1')).toEqual({
         messages: [],
         found: false,
         olderCursor: null,

@@ -12,7 +12,7 @@
 import fsp from 'node:fs/promises'
 import { IPC } from '../shared/ipc'
 import type { ChatTranscriptResult, TranscriptLine, TranscriptPresence } from '../shared/types'
-import { normalizeChatPage, type ChatTranscriptPage } from '../shared/chat-page'
+import { CHAT_PAGE_MAX_BYTES, normalizeChatPage, type ChatTranscriptPage } from '../shared/chat-page'
 import { platform } from './platform'
 import { chatMessagesFromGrok } from './grok-chat'
 import { locateGrok } from './handoff/locate'
@@ -69,6 +69,46 @@ export interface TranscriptIpcDeps {
 
 export type RemoteTranscriptPage = { ok: true; data: Buffer; start: number } | { ok: false }
 
+/** How much a window with no complete line grows per re-read. ×4 reaches the 5 MB cap from the
+ *  default 256 KB tail in three extra reads, and from the 64 KB minimum in four. */
+const CHAT_PAGE_GROWTH = 4
+
+/** A window read: its bytes from absolute offset `start` (lookbehind byte included), or `null` when
+ *  the read failed — which ends the whole page as not-found. */
+type WindowRead = (page: ChatTranscriptPage) => Promise<{ data: Buffer; start: number } | null>
+
+/**
+ * Parse the window `first` (already read for `page`), GROWING it while it holds no complete line.
+ *
+ * A record bigger than the window — in practice a `type:user` line carrying a pasted screenshot or
+ * an image tool_result, measured at 181 lines above 512 KB in 30 days on one host — used to leave
+ * the window empty, and the cursor then pointed INTO that record, so the next older read ended
+ * mid-line, failed to parse and the record vanished: screenshot prompts gone, tools missing their
+ * results. The legacy 5 MB read showed them. So the same `before` is re-read with a bigger window
+ * (×`CHAT_PAGE_GROWTH`) up to `CHAT_PAGE_MAX_BYTES`, the legacy cap — no paged read ever costs more
+ * than an unpaged one did, and only a line longer than 5 MB (which the legacy read could not show
+ * either) is skipped. Shared by the local and the remote leg, so both page identically.
+ *
+ * A failed re-read is NOT answered with the skip: dropping a record because the host blinked is the
+ * very bug this exists to fix. It is a failed read, and the caller's retry path handles it.
+ */
+async function parseGrowingWindow(
+  page: ChatTranscriptPage,
+  first: { data: Buffer; start: number },
+  read: WindowRead
+): Promise<ChatTranscriptResult> {
+  let w = first
+  let maxBytes = page.maxBytes
+  for (;;) {
+    const { noCompleteLine, ...parsed } = parseChatWindow(w.data, w.start)
+    if (!noCompleteLine || w.start === 0 || maxBytes >= CHAT_PAGE_MAX_BYTES) return { found: true, ...parsed }
+    maxBytes = Math.min(CHAT_PAGE_MAX_BYTES, maxBytes * CHAT_PAGE_GROWTH)
+    const next = await read({ before: page.before, maxBytes })
+    if (!next) return notFoundPage()
+    w = next
+  }
+}
+
 const notFoundPage = (): ChatTranscriptResult => ({
   messages: [],
   found: false,
@@ -82,26 +122,27 @@ const notFoundPage = (): ChatTranscriptResult => ({
  *
  * Remote first, as in the legacy path, and a remote failure is TERMINAL: a remote session's
  * transcript lives on the host, so falling through to the local resolver would answer from the
- * wrong machine. A shell that injects only the legacy `readRemote` (none does today) still gets a
- * correct — unpaged — answer from it rather than a local one.
+ * wrong machine. The remote leg is `readRemotePage` ONLY: a shell that can read a remote transcript
+ * must inject it (the desktop does), because paging with only the legacy `readRemote` would read a
+ * remote session's LOCAL namesake. (A `readRemote`-only fallback lived here with no caller; it was
+ * removed rather than kept untested.)
  */
 async function readChatPage(
   q: TranscriptQuery,
   page: ChatTranscriptPage,
   deps: TranscriptIpcDeps
 ): Promise<ChatTranscriptResult> {
-  if (deps.readRemotePage) {
-    const remote = await deps.readRemotePage(q, page)
+  const readRemotePage = deps.readRemotePage
+  if (readRemotePage) {
+    const remote = await readRemotePage(q, page)
     if (remote !== null) {
       if (!remote.ok) return notFoundPage()
-      return { found: true, ...parseChatWindow(remote.data, remote.start) }
-    }
-  } else if (deps.readRemote) {
-    const text = await deps.readRemote(q)
-    if (text !== null) {
-      return text
-        ? { messages: parseChatMessages(text.split('\n')), found: true, olderCursor: null, unmatchedResults: [] }
-        : notFoundPage()
+      // A growth re-read that suddenly says "not remote" (null) is a failed read too — never a
+      // reason to go read THIS machine's disk halfway through a remote page.
+      return parseGrowingWindow(page, remote, async (p) => {
+        const r = await readRemotePage(q, p)
+        return r && r.ok ? r : null
+      })
     }
   }
   const p = await resolveTranscript(q, deps.pathFor)
@@ -109,7 +150,7 @@ async function readChatPage(
   const w = await readChatWindow(p, page)
   // Resolved but unreadable (deleted between resolve and read): not-found, like a failed remote.
   if (!w) return notFoundPage()
-  return { found: true, ...parseChatWindow(w.data, w.start) }
+  return parseGrowingWindow(page, w, async (pg) => (await readChatWindow(p, pg)) ?? null)
 }
 
 /**

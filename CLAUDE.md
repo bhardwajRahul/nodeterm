@@ -2386,9 +2386,14 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   read first, so the renderer holds them until that page arrives). Parsing is the pure
   `parseChatWindow` over BYTES (a multi-byte char cut by the window edge only lands in the dropped
   partial line), and every window is read with **one byte of lookbehind** — the only way to know a
-  line begins exactly on the edge; without it that line is dropped as "partial" and lost. A line
-  longer than the whole window is skipped (`olderCursor = window start`, never the window end,
-  which would re-request the identical window forever). The **SSH leg** is a ranged read
+  line begins exactly on the edge; without it that line is dropped as "partial" and lost. A window
+  with **no complete line** (one record bigger than the window — in practice a `type:user` line
+  carrying a pasted screenshot or an image tool_result; 181 lines over 512 KB in 30 days on one
+  host) is flagged `noCompleteLine` and **re-read at the same `before` with ×4 the bytes, up to the 5 MB cap**
+  (`parseGrowingWindow` in `core/transcript-ipc.ts` — local AND SSH leg; a failed re-read is
+  not-found, never the skip). Only a line **longer than 5 MB** is skipped (`olderCursor = window
+  start`, never the window end, which would re-request the identical window forever) — before this,
+  every line bigger than the page vanished, a regression against the legacy 5 MB read. The **SSH leg** is a ranged read
   (`transcriptPageCommand`, `core/remote-ssh/transcript-window.ts` — size + window in ONE round
   trip, dd status inside the base64 like the context-tail's window command) instead of pulling the
   5 MB tail on every open and every turn-end reload; its `{ok:false}` is terminal (never the local

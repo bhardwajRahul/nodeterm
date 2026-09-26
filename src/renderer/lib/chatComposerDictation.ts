@@ -80,11 +80,53 @@ export function composerFromElement(el: Element | null | undefined): { nodeId: s
  * `composer`: fill that composer's draft. `refuse`: focus is inside a ⌘M chat view but not in its
  * composer — the plan "Revise…" textarea, a question's "Other" input, an answer button — and the
  * shortcut's fallback target, the selected terminal, is the HIDDEN pane under the view, which at
- * that moment is showing the very plan/question dialog those controls answer; a take sent there
- * (text + Enter) would answer it. `default`: the ordinary rule (card modal, selected terminal).
+ * that moment may be showing the very plan/question/permission dialog those controls answer. The
+ * overlay types a take with `enter: false`, so nothing is submitted — the risk is the typed
+ * characters themselves landing in a select dialog (moving its highlight) or in its "Other" field.
+ * `default`: the ordinary rule (card modal, selected terminal) — which then asks
+ * `dictationTargetForNode` whether THAT node's chat view is up.
  */
 export function shortcutDictationFocus(el: Element | null | undefined): 'composer' | 'refuse' | 'default' {
   if (composerFromElement(el)) return 'composer'
   if (el?.closest?.('.term-chat')) return 'refuse'
   return 'default'
+}
+
+/** A node-id attribute value, escaped for a double-quoted selector (only `"` and `\` matter). */
+const attrValue = (v: string): string => v.replace(/["\\]/g, '\\$&')
+
+/**
+ * Where a take for NODE `nodeId` goes when the request names only the node — the terminal header
+ * mic, the card modal's header mic, the Dock mic and the shortcut fallback (the selected terminal
+ * or the open card's node). While that node's ⌘M chat view is up its pane is HIDDEN and may hold a
+ * select dialog, so:
+ *   - a mounted composer for the node → that composer's draft;
+ *   - the chat view up with no composer (read-only) → null = refuse;
+ *   - otherwise → the terminal, exactly as before.
+ * `inCardModal`: the card modal is open for this node — only its own view counts, so a modal showing
+ * the LIVE terminal targets it even while the canvas node underneath is in chat view, and a modal in
+ * chat view targets the modal's composer rather than the canvas one.
+ */
+export function dictationTargetForNode(
+  nodeId: string,
+  title: string,
+  opts: { root?: ParentNode; inCardModal?: boolean } = {}
+): DictationTarget | null {
+  const root = opts.root ?? document
+  const scope: ParentNode = (opts.inCardModal && root.querySelector('.kanban-modal')) || root
+  const id = attrValue(nodeId)
+  const box = scope.querySelector(`[data-chat-composer-id][data-chat-node-id="${id}"]`)
+  const composerId = box?.getAttribute('data-chat-composer-id')
+  if (composerId) return { kind: 'chat-composer', nodeId, composerId, title }
+  if (scope.querySelector(`.term-chat[data-chat-node-id="${id}"]`)) return null
+  return { kind: 'terminal', nodeId, title }
+}
+
+/** The one sentence a refused dictation says (shortcut, Dock or header mic, inside a chat view). */
+export const CHAT_DICTATION_REFUSED =
+  "Dictation can't go to the terminal while its chat view is open — use the mic in the chat composer."
+
+/** Say so — a refused chord or mic click with nothing on screen reads as a dead key. */
+export function announceChatDictationRefusal(): void {
+  window.dispatchEvent(new CustomEvent('nodeterm:toast', { detail: { kind: 'error', message: CHAT_DICTATION_REFUSED } }))
 }

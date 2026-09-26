@@ -146,4 +146,25 @@ describe('shortcutDictationFocus (both shortcut paths decide with it)', () => {
     expect(refuseHold).toBeGreaterThan(-1)
     expect(refuseHold).toBeLessThan(hold.indexOf('armed = true'))
   })
+
+  it('every mic that names only a node goes through nodeDictationTarget and says so on refusal (source pin)', () => {
+    const src = readFileSync(resolve(__dirname, '../canvas/Canvas.tsx'), 'utf8').replace(/\r\n/g, '\n')
+    // The header / card-modal mic: a bare `{nodeId}` request.
+    const onDictate = src.slice(src.indexOf('const onDictate = (e: Event): void => {'))
+    expect(onDictate.indexOf('nodeDictationTarget(n.id, title)')).toBeGreaterThan(-1)
+    expect(onDictate.indexOf('announceChatDictationRefusal()')).toBeLessThan(onDictate.indexOf('setDictationOpen(true)'))
+    // The shortcut / Dock fallback.
+    const toggle = src.slice(src.indexOf('const toggleDictation = useCallback'))
+    expect(toggle.indexOf('nodeDictationTarget(node.id')).toBeGreaterThan(-1)
+    expect(toggle.indexOf('nodeDictationTarget(node.id')).toBeLessThan(toggle.indexOf('setDictationTarget(target)'))
+    // Hold-to-talk: the target is decided BEFORE it arms, so a refusal never opens the overlay.
+    const hold = src.slice(src.indexOf('if (!chordHeld(e, combo, isMac)) return'))
+    expect(hold.indexOf('nodeDictationTarget(sel.id')).toBeGreaterThan(-1)
+    expect(hold.indexOf('nodeDictationTarget(sel.id')).toBeLessThan(hold.indexOf('armed = true'))
+  })
+
+  it('the chat panel marks its node, so a node-named mic can find its chat view', async () => {
+    const src = readFileSync(resolve(__dirname, '../nodes/ChatPanel.tsx'), 'utf8').replace(/\r\n/g, '\n')
+    expect(src).toMatch(/className="term-chat nodrag nowheel" data-chat-node-id=\{nodeId\}/)
+  })
 })

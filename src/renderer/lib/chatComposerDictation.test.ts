@@ -3,8 +3,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
+  announceChatDictationRefusal,
   composerFromElement,
   deliverToComposer,
+  dictationTargetForNode,
   dictationTargetFromRequest,
   requestComposerDictation,
   subscribeComposerDictation
@@ -94,8 +96,74 @@ describe('composerFromElement (shortcut dictation with the caret in a composer)'
     const toggle = src.slice(src.indexOf('const toggleDictation = useCallback'))
     expect(toggle.indexOf('focusedComposerDictationTarget()')).toBeGreaterThan(-1)
     expect(toggle.indexOf('focusedComposerDictationTarget()')).toBeLessThan(toggle.indexOf('kanbanModalNodeRef.current'))
-    const hold = src.slice(src.indexOf('armed = true\n        heldSince = Date.now()'))
+    const hold = src.slice(src.indexOf('if (!chordHeld(e, combo, isMac)) return'))
     expect(hold.indexOf('focusedComposerDictationTarget()')).toBeGreaterThan(-1)
     expect(hold.indexOf('focusedComposerDictationTarget()')).toBeLessThan(hold.indexOf('setDictationNonce'))
+  })
+})
+
+describe('dictationTargetForNode (every mic that names a node: header, card modal, Dock, shortcut fallback)', () => {
+  const mk = (html: string): HTMLDivElement => {
+    const root = document.createElement('div')
+    root.innerHTML = html
+    document.body.append(root)
+    return root
+  }
+  const composerBox = (node: string, id: string) =>
+    `<div class="term-chat" data-chat-node-id="${node}"><div data-chat-composer-id="${id}" data-chat-node-id="${node}"><textarea></textarea></div></div>`
+
+  it('targets the terminal when no chat view is up for the node (unchanged behavior)', () => {
+    const root = mk('<div class="term-node"></div>')
+    expect(dictationTargetForNode('n1', 'T', { root })).toEqual({ kind: 'terminal', nodeId: 'n1', title: 'T' })
+    root.remove()
+  })
+
+  it('targets the node\'s mounted COMPOSER while its chat view is up — never the hidden pane', () => {
+    const root = mk(composerBox('n1', 'c1') + composerBox('n2', 'c2'))
+    expect(dictationTargetForNode('n1', 'T', { root })).toEqual({ kind: 'chat-composer', nodeId: 'n1', composerId: 'c1', title: 'T' })
+    root.remove()
+  })
+
+  it('prefers the composer inside the card modal when the modal is open for that node', () => {
+    const root = mk(composerBox('n1', 'canvas') + `<div class="kanban-modal">${composerBox('n1', 'modal')}</div>`)
+    expect(dictationTargetForNode('n1', 'T', { root, inCardModal: true })).toMatchObject({ composerId: 'modal' })
+    expect(dictationTargetForNode('n1', 'T', { root })).toMatchObject({ composerId: 'canvas' })
+    root.remove()
+  })
+
+  it('with the card modal open and SHOWING its live terminal, the modal terminal is the target even if the canvas node is in chat view', () => {
+    const root = mk(composerBox('n1', 'canvas') + '<div class="kanban-modal"><div class="kanban-modal__pane"></div></div>')
+    expect(dictationTargetForNode('n1', 'T', { root, inCardModal: true })).toEqual({ kind: 'terminal', nodeId: 'n1', title: 'T' })
+    root.remove()
+  })
+
+  it('REFUSES (null) a chat view with no composer (read-only): the pane under it is hidden', () => {
+    const root = mk('<div class="term-chat" data-chat-node-id="n1"></div>')
+    expect(dictationTargetForNode('n1', 'T', { root })).toBeNull()
+    root.remove()
+  })
+
+  it('matches the node id literally (quotes/backslashes cannot break out of the selector)', () => {
+    const root = document.createElement('div')
+    const box = document.createElement('div')
+    box.setAttribute('data-chat-composer-id', 'c1')
+    box.setAttribute('data-chat-node-id', 'a"b\\c')
+    root.append(box)
+    document.body.append(root)
+    expect(dictationTargetForNode('a"b\\c', 'T', { root })).toMatchObject({ kind: 'chat-composer', composerId: 'c1' })
+    expect(dictationTargetForNode('a"b', 'T', { root })).toMatchObject({ kind: 'terminal' })
+    root.remove()
+  })
+
+  it('announces a refusal once, naming the composer mic (a silent refusal reads as a dead key)', () => {
+    const seen: Array<{ kind: string; message: string }> = []
+    const h = (e: Event) => seen.push((e as CustomEvent).detail)
+    window.addEventListener('nodeterm:toast', h)
+    announceChatDictationRefusal()
+    window.removeEventListener('nodeterm:toast', h)
+    expect(seen).toHaveLength(1)
+    expect(seen[0].kind).toBe('error')
+    expect(seen[0].message).toMatch(/composer/i)
+    expect(seen[0].message).toMatch(/mic/i)
   })
 })

@@ -2601,7 +2601,15 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   "Revise…" textarea and the question "Other" input share that class and sit outside the box. With
   focus anywhere else inside `.term-chat` (those fields, the answer buttons) BOTH shortcut paths
   refuse (`shortcutDictationFocus` → `refuse`): their fallback, the selected terminal, is the hidden
-  pane showing the very plan/question dialog, and a take sent there would answer it.
+  pane showing the very plan/question dialog, and typed characters landing there would move its
+  highlight or fill its "Other" field (the overlay types with `enter: false`, so nothing submits).
+  **Every mic that names only a NODE** — the terminal header mic, the card modal's header mic, the
+  Dock mic and the shortcut fallback (selected terminal / open card) — goes through
+  `dictationTargetForNode`: while that node's chat view is up (`.term-chat[data-chat-node-id]`) the
+  take goes to its mounted composer (the card modal's own when the modal is open for that node, so
+  a modal showing the LIVE terminal still targets it), a chat view with no composer refuses, and
+  otherwise it is the terminal as before. Every refusal says so in one `nodeterm:toast`
+  (`announceChatDictationRefusal`, naming the composer mic) instead of a silent dead key.
 - **Subagent visualization** (agents in `SUBAGENT_CAPABLE`) — `subagent-start`/`subagent-end`
   normalized events (from Claude's `PreToolUse`/`PostToolUse` on tool `Agent`/`Task`, correlated
   by `tool_use_id`) drive a transient `state/agentNodes.ts` store. Claude launches subagents
@@ -4434,7 +4442,8 @@ the Settings section and ShortcutsPanel start disagreeing about what a chord mea
     swallows its chord app-wide with the recorder reporting no conflict.
   - **Dictation has its own conflict bucket** (`conflictBucket` — `speech.dictation` is never in
     `global`), because it never competes at dispatch: the resolver skips it and its own keyed
-    listener claims the chord FIRST **in plain app focus only**, which is precedence, not ambiguity.
+    listener claims the chord FIRST **in plain app focus or the ⌘M composer box** (`isChatComposerTarget`),
+    which is precedence, not ambiguity.
     Overlap policy is deliberately asymmetric — the LOAD path PERMITS a shared chord (legacy
     settings.json files contain them and `sanitizeKeybindingOverrides` would otherwise strip the
     user's own binding with the migrated one), while the Settings UI REFUSES to create one

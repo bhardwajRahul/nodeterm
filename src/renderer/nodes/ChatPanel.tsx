@@ -561,7 +561,9 @@ export function ChatPanel({
   const showEmpty = messages.length === 0 && loadState !== 'loading' && !(loadState === 'ok' && historyPending)
 
   return (
-    <div className="term-chat nodrag nowheel">
+    // `data-chat-node-id`: which node's chat view this is — the mics that name only a node ask it
+    // (lib/chatComposerDictation.ts `dictationTargetForNode`) so a take never reaches the hidden pane.
+    <div className="term-chat nodrag nowheel" data-chat-node-id={nodeId}>
       <div className="term-chat__bar">
         <span>{title ?? 'Chat'}</span>
         <span className="term-chat__bar-end">

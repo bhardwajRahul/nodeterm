@@ -4,10 +4,10 @@
 // core/agent-status-mirror.test.ts); with a stash the mirror strips pendingId and nothing renders.
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { normalizeClaude } from '@shared/agents/normalize'
 import { useAgentStatus } from '../state/agentStatus'
-import { canPlainApprove } from './approveGate'
+import { canPlainApprove, sendHeaderAnswer } from './approveGate'
 
 let seq = 0
 function held(tool: string, toolInput: unknown): string {
@@ -46,5 +46,45 @@ describe('canPlainApprove', () => {
   it('the node header renders ✓ Approve through this gate', () => {
     const src = readFileSync(resolve(__dirname, '../nodes/TerminalNode.tsx'), 'utf8')
     expect(src).toContain('{canPlainApprove(status) && (')
+  })
+  it('both header buttons answer through sendHeaderAnswer (a refusal is never silent)', () => {
+    const src = readFileSync(resolve(__dirname, '../nodes/TerminalNode.tsx'), 'utf8').replace(/\r\n/g, '\n')
+    expect(src.match(/sendHeaderAnswer\(window\.nodeTerminal\.answerPermission, \{/g)).toHaveLength(2)
+    expect(src).not.toContain('void window.nodeTerminal.answerPermission(')
+  })
+})
+
+describe('sendHeaderAnswer — the header ✓/✕ never fails silently', () => {
+  const payload = { nodeId: 'n', pendingId: 'n-1-1', decision: 'allow' as const }
+  it('a refused answer raises an error toast that points at the terminal', async () => {
+    const toast = vi.fn()
+    expect(await sendHeaderAnswer(async () => false, payload, toast)).toBe(false)
+    expect(toast).toHaveBeenCalledWith("Couldn't approve — answer in the terminal")
+  })
+  it('a rejected call is the same refusal (never an unhandled rejection)', async () => {
+    const toast = vi.fn()
+    expect(
+      await sendHeaderAnswer(async () => { throw new Error('ipc down') }, { ...payload, decision: 'deny' }, toast)
+    ).toBe(false)
+    expect(toast).toHaveBeenCalledWith("Couldn't deny — answer in the terminal")
+  })
+  it('a delivered answer says nothing (the badge change is the receipt)', async () => {
+    const toast = vi.fn()
+    const send = vi.fn(async () => true)
+    expect(await sendHeaderAnswer(send, payload, toast)).toBe(true)
+    expect(send).toHaveBeenCalledWith(payload)
+    expect(toast).not.toHaveBeenCalled()
+  })
+  it('the default sink is the app error toast', async () => {
+    const seen: unknown[] = []
+    const g = globalThis as unknown as { window?: { dispatchEvent: (e: { detail: unknown }) => void } }
+    const prev = g.window
+    g.window = { dispatchEvent: (e) => void seen.push(e.detail) }
+    try {
+      await sendHeaderAnswer(async () => false, payload)
+    } finally {
+      g.window = prev
+    }
+    expect(seen).toEqual([{ kind: 'error', message: "Couldn't approve — answer in the terminal" }])
   })
 })

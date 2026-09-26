@@ -1,5 +1,5 @@
 import { useContextEnsure } from '../terminal/useContextEnsure'
-import { canPlainApprove } from '../lib/approveGate'
+import { canPlainApprove, sendHeaderAnswer } from '../lib/approveGate'
 import { FIND_DECORATIONS } from '../lib/palette'
 import { ptyRefusal } from '@shared/pty-refusal'
 
@@ -5700,7 +5700,7 @@ export function TerminalNode({
                 className="term-node__approve-btn term-node__approve-btn--allow"
                 title="Approve this permission request"
                 onClick={() =>
-                  void window.nodeTerminal.answerPermission({
+                  void sendHeaderAnswer(window.nodeTerminal.answerPermission, {
                     nodeId: id,
                     pendingId: status.pendingId!,
                     decision: 'allow'
@@ -5714,7 +5714,7 @@ export function TerminalNode({
               className="term-node__approve-btn term-node__approve-btn--deny"
               title="Deny this permission request"
               onClick={() =>
-                void window.nodeTerminal.answerPermission({
+                void sendHeaderAnswer(window.nodeTerminal.answerPermission, {
                   nodeId: id,
                   pendingId: status.pendingId!,
                   decision: 'deny'

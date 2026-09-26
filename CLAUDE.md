@@ -1203,7 +1203,12 @@ seed** — the cases are:
   never plain-shell/session-host, whose normal-buffer scrollback is their only history — and the
   renderer writes `CO_ATTACH_ALT_SCREEN_SEQ` **BEFORE** painting (entering the alternate buffer
   clears the display, so writing it after would erase the paint; TerminalNode skips it once a
-  resync has superseded the seed, since that repaint may already be on screen). Without it a
+  resync has superseded the seed, since that repaint may already be on screen). **Known
+  limitation of "never plain-shell":** a REMOTE SSH session on a host WITHOUT tmux
+  (`tmuxOrExplain`'s plain login-shell fallback) is still recorded `tmuxBacked` — core cannot tell
+  from here that the remote command degraded — so it too gets the alt switch (and `coAttachMouse`,
+  and `tmuxClient`'s resync re-apply), hiding that shell's normal-buffer scrollback; detecting the
+  degrade is a follow-up. Without it a
   renderer reload left every terminal on the normal buffer, piling up to 10k lines of scrollback
   and forcing a layout per output frame — measured 16.1% vs 7.3% CPU for one terminal at
   20 lines/s, 313 vs 1 forced layouts per 20 s. **A resync repaint loses the same two modes**:
@@ -2382,7 +2387,8 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
     path's (size, mtime) (`titleCache`, bounded at 500, a failed tail read never cached), and the
     remote one (`main/remote-title-reader.ts`) on the remote context tail's `offsetFor` for the SAME
     path — that offset is the file size at the tail's last read, so a remote `/rename` lands within
-    the tail's idle backoff (≤ 10 s); an untracked session (offset unknown) always reads.
+    the tail's idle backoff (real gaps between idle reads ≈3/5/9/11 s) PLUS one title poll
+    (4–15 s); an untracked session (offset unknown) always reads.
   - **title → session (write):** the moment the user renames the node by hand (header rename box /
     ✦ AI-name / sidebar / command palette → all funnel through `applyManualTitle` or
     `renameSession`), `titleAuto` flips to **false** (polling stops overwriting) and the chosen name
@@ -5274,7 +5280,9 @@ whole turn — MEASURED (production build, M2, focused): one visible working nod
 total CPU and ~25 style recalcs/s** for as long as it ran. It now runs 4 cycles of 2.6 s (~10 s) and
 rests at `opacity: 0.7`, the same static-lit value the idle gate and Reduce Motion already hold it
 at; the keyframes start and end at 0.7, so the settle is seamless. A new turn re-adds `.working`,
-which restarts the pulse. Unread and attention stay infinite on purpose — they exist to pull the
+which restarts the pulse — and so does anything else that re-applies the animation: a window
+refocus (the idle gate sets `animation: none`, so lifting it starts the shorthand afresh) and a node
+remount (a project switch, a park re-adopt) each replay the four pulses. Still bounded every time. Unread and attention stay infinite on purpose — they exist to pull the
 eye, and the idle gate covers the unfocused case. `styles.animation-gate.test.ts` pins the bounded
 shorthand, the resting opacity and the keyframe endpoints.
 

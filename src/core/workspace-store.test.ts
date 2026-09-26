@@ -1231,11 +1231,6 @@ describe('ssh reconcile self-write recognition (the spurious conflict bar)', () 
   })
 })
 
-// Field bug (2026-08-10): two projects + rapid tab switching → both canvases wiped. Every switch
-// fires an un-awaited full save; save() was unserialized and writeAtomic used one fixed tmp path,
-// so overlapping saves spliced each other's tmp bytes (corrupt JSON published by rename) and a slow
-// older save could land its stale index after a newer one. A corrupt index then silently became
-// EMPTY_WORKSPACE, which the renderer's unconditional boot save wrote back — zero entries, no backup.
 // Autosave runs 800 ms after every edit or camera move. It must not re-parse every folder project's
 // last-written bytes, nor rewrite an index whose bytes it already wrote — but a write another
 // writer made on disk since then must still be answered with ours.
@@ -1329,6 +1324,11 @@ describe('autosave skips unchanged work', () => {
   })
 })
 
+// Field bug (2026-08-10): two projects + rapid tab switching → both canvases wiped. Every switch
+// fires an un-awaited full save; save() was unserialized and writeAtomic used one fixed tmp path,
+// so overlapping saves spliced each other's tmp bytes (corrupt JSON published by rename) and a slow
+// older save could land its stale index after a newer one. A corrupt index then silently became
+// EMPTY_WORKSPACE, which the renderer's unconditional boot save wrote back — zero entries, no backup.
 describe('save corruption hardening', () => {
   afterEach(() => {
     vi.restoreAllMocks()

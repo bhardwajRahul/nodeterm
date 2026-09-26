@@ -279,7 +279,9 @@ export interface PtyCreateResult {
    * scrolled output piled up there and every output frame forced a layout (xterm's viewport
    * resync) — measured 16.1% vs 7.3% total CPU for one terminal streaming 20 lines/s.
    * Absent for plain-shell and session-host sessions: there the pty IS the shell and its
-   * normal-buffer scrollback is the only history it has.
+   * normal-buffer scrollback is the only history it has. Known limitation: a REMOTE SSH session on
+   * a host WITHOUT tmux (`tmuxOrExplain`'s plain login-shell fallback) is still recorded tmuxBacked,
+   * so it gets this (and `coAttachMouse`, and `tmuxClient`) too; detecting that is a follow-up.
    */
   coAttachAltScreen?: boolean
   /**

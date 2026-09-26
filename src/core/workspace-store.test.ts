@@ -1266,6 +1266,29 @@ describe('autosave skips unchanged work', () => {
     expect((await readIndex()).entries.length).toBeGreaterThan(0)
   })
 
+  // A coarse-mtime filesystem (whole seconds) cannot tell a same-size rewrite inside the same
+  // second from no write at all. Every writer publishes by rename, so the inode can.
+  it('rewrites after a same-size, same-mtime rewrite on a coarse-mtime filesystem (new inode)', async () => {
+    const realStat = fs.stat.bind(fs)
+    vi.spyOn(fs, 'stat').mockImplementation((async (p: string) => {
+      const st = await realStat(p)
+      return Object.assign(st, { mtimeMs: Math.floor(st.mtimeMs / 1000) * 1000 })
+    }) as typeof fs.stat)
+    const store = new WorkspaceStore()
+    await store.save(ws([project({ cwd: projRoot })]))
+    const ours = await realStat(indexPath())
+    // Another instance rewrites the SAME bytes via rename (new inode), same second.
+    const tmp = indexPath() + '.other'
+    await fs.writeFile(tmp, await fs.readFile(indexPath()))
+    await fs.utimes(tmp, ours.atime, ours.mtime)
+    await fs.rename(tmp, indexPath())
+    const theirs = await realStat(indexPath())
+    expect(theirs.ino).not.toBe(ours.ino)
+    expect(theirs.size).toBe(ours.size)
+    await store.save(ws([project({ cwd: projRoot })]))
+    expect((await realStat(indexPath())).ino).not.toBe(theirs.ino) // we wrote ours back
+  })
+
   it('a changed index is still written', async () => {
     const store = new WorkspaceStore()
     await store.save(ws([project({ cwd: projRoot })]))

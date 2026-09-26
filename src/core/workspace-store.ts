@@ -134,10 +134,12 @@ export class WorkspaceStore {
    *  its last write on EVERY autosave; re-parsing each file each time was pure waste. Keyed by the
    *  raw string, so any `lastWritten.set` elsewhere invalidates it by construction. */
   private lastWrittenParsed = new Map<string, { raw: string; parsed: ProjectFileV1 }>()
-  /** The index bytes we last wrote and the file's size/mtime right after, so an unchanged index is
-   *  not rewritten on every autosave — but one another writer changed on disk still is. Any other
-   *  index write of ours clears it, so it only ever describes the last write `save()` made. */
-  private lastIndexWrite: { json: string; size: number; mtimeMs: number } | null = null
+  /** The index bytes we last wrote and the file's size/mtime/inode right after, so an unchanged
+   *  index is not rewritten on every autosave — but one another writer changed on disk still is.
+   *  The inode is what catches a same-size rewrite on a coarse-mtime filesystem: every writer
+   *  publishes by rename, so any rewrite is a new inode. Any other index write of ours clears it, so
+   *  it only ever describes the last write `save()` made. */
+  private lastIndexWrite: { json: string; size: number; mtimeMs: number; ino: number } | null = null
   /** project id -> rev of the last written/loaded file. */
   private revs = new Map<string, number>()
   /** Entries whose one-time exec migration could NOT run (their project file was unreadable at load).
@@ -1145,20 +1147,27 @@ export class WorkspaceStore {
     }
 
     // Compact index, atomic — same reasoning as the old single-file store. Skipped when the bytes
-    // equal our last write AND the file still has the size/mtime that write left (another instance
-    // sharing this userData rewrote it otherwise). A migration always writes: the v3 flip is the
-    // point of that save.
+    // equal our last write AND the file still has the size/mtime/inode that write left (another
+    // instance sharing this userData rewrote it otherwise). A migration always writes: the v3 flip
+    // is the point of that save.
     const indexJson = JSON.stringify(index)
-    const onDisk = !migrating && this.lastIndexWrite?.json === indexJson
+    const last = this.lastIndexWrite
+    const onDisk = !migrating && last?.json === indexJson
       ? await fs.stat(this.indexPath).catch(() => null)
       : null
     const unchanged =
-      !!onDisk && onDisk.size === this.lastIndexWrite!.size && onDisk.mtimeMs === this.lastIndexWrite!.mtimeMs
+      !!onDisk &&
+      !!last &&
+      onDisk.size === last.size &&
+      onDisk.mtimeMs === last.mtimeMs &&
+      onDisk.ino === last.ino
     if (!unchanged) {
       this.lastIndexWrite = null
       await writeAtomic(this.indexPath, indexJson)
       const st = await fs.stat(this.indexPath).catch(() => null)
-      this.lastIndexWrite = st ? { json: indexJson, size: st.size, mtimeMs: st.mtimeMs } : null
+      this.lastIndexWrite = st
+        ? { json: indexJson, size: st.size, mtimeMs: st.mtimeMs, ino: st.ino }
+        : null
     }
     await this.sweepRemovedDataFiles(previousIndex, index)
     this.index = index

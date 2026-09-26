@@ -3,7 +3,8 @@
 // The cadence rule itself is the pure `scrollback-cadence.ts`; this file pins the WIRING: a
 // continuously dirty session is captured on the cadence, not on every tick; captures run one at a
 // time instead of all in the same instant; a capture still in flight is never queued twice; a
-// failed capture re-marks the session dirty; and an identical capture is not rewritten to disk.
+// failed capture OR a failed disk write re-marks the session dirty; and an identical capture is
+// not rewritten to disk.
 // Sessions are registered directly (no spawn harness) — the tick reads only the fields set below.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { initPlatform, resetPlatformForTests } from './platform'
@@ -199,6 +200,29 @@ describe('snapshotTick serialization', () => {
     await settle(mgr)
     expect(session.outputSinceSnapshot).toBe(true)
     expect(session.snapshotQueued).toBe(false)
+  })
+
+  it('a failed disk WRITE puts the dirty bit back too (the capture succeeding is not enough)', async () => {
+    const mgr = await manager(['a'])
+    const session = mgr.sessions.get('sess-a')!
+    store.failNext = true
+    mgr.snapshotTick()
+    await settle(mgr)
+    expect(store.writes).toHaveLength(1) // the capture ran and the write was attempted…
+    expect(session.outputSinceSnapshot).toBe(true) // …and failed, so the next tick retries
+    expect(session.snapshotQueued).toBe(false)
+  })
+
+  it('an unchanged capture (skipped write) counts as done and stays clean', async () => {
+    const mgr = await manager(['a'])
+    const session = mgr.sessions.get('sess-a')!
+    mgr.snapshotTick()
+    await settle(mgr)
+    session.outputSinceSnapshot = true // a cursor-only redraw: same captured text
+    mgr.snapshotTick()
+    await settle(mgr)
+    expect(store.writes).toHaveLength(1)
+    expect(session.outputSinceSnapshot).toBe(false)
   })
 })
 

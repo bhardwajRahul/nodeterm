@@ -4251,21 +4251,28 @@ export class PtyManager {
     }
   }
 
-  /** Skip rewriting an identical snapshot (a quiet-but-dirty pane, a cursor-only change). */
-  private async writeScrollbackIfChanged(persistKey: string, text: string): Promise<void> {
+  /**
+   * Skip rewriting an identical snapshot (a quiet-but-dirty pane, a cursor-only change). Returns
+   * whether the disk now holds this text: true when written OR skipped as unchanged, false when the
+   * write failed — so the tick can re-mark the session dirty and retry.
+   */
+  private async writeScrollbackIfChanged(persistKey: string, text: string): Promise<boolean> {
     const digest = createHash('sha1').update(text).digest('hex')
-    if (this.lastSnapshotDigest.get(persistKey) === digest) return
+    if (this.lastSnapshotDigest.get(persistKey) === digest) return true
     // Only a write that LANDED may be remembered: recording the digest of a failed one (ENOSPC, a
     // rename that exhausted its retries on Windows) would skip every later identical capture —
     // detach/quit's final ones included — for the rest of the run.
-    if (await writeScrollback(persistKey, text)) this.lastSnapshotDigest.set(persistKey, digest)
+    const written = await writeScrollback(persistKey, text)
+    if (written) this.lastSnapshotDigest.set(persistKey, digest)
+    return written
   }
 
   /**
    * Snapshot a node's recent scrollback (with colors, `-e`) to disk for cold-restart replay.
    * Best-effort: a missing session / unavailable tmux just leaves the prior snapshot in place.
-   * Returns false when the capture failed, so the periodic tick can re-mark the session dirty
-   * and retry (the dirty bit is cleared optimistically before the capture starts).
+   * Returns false when the capture OR its disk write failed, so the periodic tick can re-mark the
+   * session dirty and retry (the dirty bit is cleared optimistically before the capture starts).
+   * An empty capture writes nothing and counts as done.
    */
   private async snapshotScrollback(
     persistKey: string,
@@ -4282,8 +4289,7 @@ export class PtyManager {
           remoteCapturePaneArgs(sshRemote.conn, sshRemote.controlPath, sessionName(persistKey), false),
           { encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024 }
         )
-        if (stdout) await this.writeScrollbackIfChanged(persistKey, stdout)
-        return true
+        return stdout ? await this.writeScrollbackIfChanged(persistKey, stdout) : true
       } catch {
         // remote session gone / master down — keep the last good snapshot
         return false
@@ -4298,8 +4304,7 @@ export class PtyManager {
       if (!this.getSettings().tmuxEnabled || !sessionHostSupported()) return false
       try {
         const text = await sessionHostCapture(sessionName(persistKey), true)
-        if (text) await this.writeScrollbackIfChanged(persistKey, text)
-        return true
+        return text ? await this.writeScrollbackIfChanged(persistKey, text) : true
       } catch {
         return false
       }
@@ -4310,8 +4315,7 @@ export class PtyManager {
         ['-L', TMUX_SOCKET, 'capture-pane', '-p', '-e', '-t', sessionName(persistKey), '-S', '-1500'],
         { encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024 }
       )
-      if (stdout) await this.writeScrollbackIfChanged(persistKey, stdout)
-      return true
+      return stdout ? await this.writeScrollbackIfChanged(persistKey, stdout) : true
     } catch {
       // session gone / tmux unavailable — keep the last good snapshot
       return false

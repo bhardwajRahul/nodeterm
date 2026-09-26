@@ -86,7 +86,8 @@ Core builds it (`core/agents/permission-decision.ts`, `buildPermissionDecision`)
 agent's host** — the only source of truth for the tool and for `questions` (never renderer-echoed
 data). Every field is validated: the tool must match, plan modes are a closed enum, a label must
 exist in that question's options unless the entry is explicitly free text, several labels only on a
-multiSelect question, sizes capped (text 8000 chars, the whole decision 64 KB). A structured answer
+multiSelect question, EVERY question the request asks must be answered (a partial set is refused —
+the TUI never submits a half-answered picker), sizes capped (text 8000 chars, the whole decision 64 KB). A structured answer
 is refused when the request file is gone (the hold ended) — the call resolves `false`.
 
 **What the script prints** (`managed-script.ts`, tested under a real `/bin/sh` in

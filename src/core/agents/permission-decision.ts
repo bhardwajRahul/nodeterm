@@ -196,6 +196,10 @@ function buildQuestionDecision(
       out[question] = answer.join(', ')
     }
   }
+  // Every question the request asks must be answered — the TUI never submits a half-answered
+  // picker, and `updatedInput` would hand Claude a question the user never saw answered. Counted on
+  // the null-prototype `out`, whose keys are all validated question texts ("__proto__" included).
+  if (Object.keys(out).length !== index.size) return { ok: false, reason: 'not every question is answered' }
   // `updatedInput` REPLACES the whole input, so everything the request carried (questions,
   // title/metadata on the extended variant) is echoed from the PENDING FILE, never from the renderer.
   const updatedInput = { ...pending.toolInput, answers: out }

@@ -178,11 +178,16 @@ describe('buildPermissionDecision — plan', () => {
   })
 })
 
+// The request asks TWO questions; a valid answer answers both (core refuses a partial set).
+const SURFACES = 'Which surfaces should get it?'
+const ANSWER_1 = { [QUESTION_TEXT]: 'Kim kimi okuyabilir (context)' }
+const ANSWER_2 = { [SURFACES]: ['Desktop'] }
+
 describe('buildPermissionDecision — question', () => {
   it('echoes the PENDING request\'s questions verbatim and adds answers keyed by the exact question text', () => {
     const r = buildPermissionDecision(QUESTION_REQ, {
       kind: 'question',
-      answers: { [QUESTION_TEXT]: 'Kim kimi okuyabilir (context)' }
+      answers: { ...ANSWER_1, ...ANSWER_2 }
     })
     if (!r.ok) throw new Error(r.reason)
     expect(r.decision).toBe('allow')
@@ -190,39 +195,43 @@ describe('buildPermissionDecision — question', () => {
     expect(d.behavior).toBe('allow')
     expect(d.updatedInput).toEqual({
       questions: REAL_QUESTIONS,
-      answers: { [QUESTION_TEXT]: 'Kim kimi okuyabilir (context)' }
+      answers: { [QUESTION_TEXT]: 'Kim kimi okuyabilir (context)', [SURFACES]: 'Desktop' }
     })
     expect(r.content.startsWith(PERMISSION_DECISION_PREFIX)).toBe(true)
   })
   it('multiSelect: an array of labels is joined with ", " (the TUI\'s own transcript format)', () => {
     const r = buildPermissionDecision(QUESTION_REQ, {
       kind: 'question',
-      answers: { 'Which surfaces should get it?': ['Desktop', 'Phone'] }
+      answers: { ...ANSWER_1, [SURFACES]: ['Desktop', 'Phone'] }
     })
     if (!r.ok) throw new Error(r.reason)
     expect((decisionOf(r.content).updatedInput as { answers: unknown }).answers).toEqual({
-      'Which surfaces should get it?': 'Desktop, Phone'
+      ...ANSWER_1,
+      [SURFACES]: 'Desktop, Phone'
     })
   })
   it('free text is accepted ONLY for a key the answer marks explicitly as free text', () => {
     const typed = 'context bağlamak pazarlama değeri var kalabilir'
-    expect(buildPermissionDecision(QUESTION_REQ, { kind: 'question', answers: { [QUESTION_TEXT]: typed } }).ok).toBe(false)
+    expect(
+      buildPermissionDecision(QUESTION_REQ, { kind: 'question', answers: { [QUESTION_TEXT]: typed, ...ANSWER_2 } }).ok
+    ).toBe(false)
     const r = buildPermissionDecision(QUESTION_REQ, {
       kind: 'question',
-      answers: { [QUESTION_TEXT]: typed },
+      answers: { [QUESTION_TEXT]: typed, ...ANSWER_2 },
       freeText: [QUESTION_TEXT]
     })
     if (!r.ok) throw new Error(r.reason)
     expect((decisionOf(r.content).updatedInput as { answers: Record<string, string> }).answers[QUESTION_TEXT]).toBe(typed)
   })
   it('refuses: unknown question, unknown label, array on a single-select, empty/duplicate/oversized picks', () => {
+    // Each set is otherwise COMPLETE, so the one defect is what refuses it.
     const bad: Array<Record<string, string | string[]>> = [
-      { 'Not a question we asked': 'Desktop' },
-      { [QUESTION_TEXT]: 'Desktop' },
-      { [QUESTION_TEXT]: ['Kim kimi okuyabilir (context)'] },
-      { 'Which surfaces should get it?': [] },
-      { 'Which surfaces should get it?': ['Desktop', 'Desktop'] },
-      { 'Which surfaces should get it?': ['Desktop', 'Nope'] },
+      { ...ANSWER_1, ...ANSWER_2, 'Not a question we asked': 'Desktop' },
+      { [QUESTION_TEXT]: 'Desktop', ...ANSWER_2 },
+      { [QUESTION_TEXT]: ['Kim kimi okuyabilir (context)'], ...ANSWER_2 },
+      { ...ANSWER_1, [SURFACES]: [] },
+      { ...ANSWER_1, [SURFACES]: ['Desktop', 'Desktop'] },
+      { ...ANSWER_1, [SURFACES]: ['Desktop', 'Nope'] },
       {}
     ]
     for (const answers of bad) {
@@ -231,7 +240,7 @@ describe('buildPermissionDecision — question', () => {
     expect(
       buildPermissionDecision(QUESTION_REQ, {
         kind: 'question',
-        answers: { [QUESTION_TEXT]: 'x'.repeat(20_000) },
+        answers: { [QUESTION_TEXT]: 'x'.repeat(20_000), ...ANSWER_2 },
         freeText: [QUESTION_TEXT]
       }).ok
     ).toBe(false)
@@ -239,10 +248,41 @@ describe('buildPermissionDecision — question', () => {
     expect(
       buildPermissionDecision(QUESTION_REQ, {
         kind: 'question',
-        answers: { [QUESTION_TEXT]: 'Kim kimi okuyabilir (context)' },
+        answers: { ...ANSWER_1, ...ANSWER_2 },
         freeText: ['something else']
       }).ok
     ).toBe(false)
+  })
+  it('refuses a PARTIAL answer set: every question the request asks must be answered', () => {
+    // The TUI never submits a half-answered picker; `updatedInput` REPLACES the tool input, so a
+    // missing answer would reach Claude as a question the user never saw answered.
+    for (const answers of [ANSWER_1, ANSWER_2]) {
+      expect(buildPermissionDecision(QUESTION_REQ, { kind: 'question', answers }), JSON.stringify(answers)).toMatchObject({
+        ok: false
+      })
+    }
+    expect(buildPermissionDecision(QUESTION_REQ, { kind: 'question', answers: { ...ANSWER_1, ...ANSWER_2 } }).ok).toBe(true)
+  })
+  it('"__proto__" counts as an ordinary question in the completeness check too', () => {
+    const req = parsePendingRequest(
+      envelope('AskUserQuestion', {
+        questions: [
+          { question: '__proto__', header: 'h', options: [{ label: 'a' }], multiSelect: false },
+          { question: 'B?', header: 'h', options: [{ label: 'b' }], multiSelect: false }
+        ]
+      })
+    ) as PendingRequest
+    // Only the __proto__ key: an own key, but one of two — refused.
+    const onlyProto = parsePermissionAnswer(JSON.parse('{"kind":"question","answers":{"__proto__":"a"}}'))
+    expect(onlyProto).not.toBeNull()
+    expect(buildPermissionDecision(req, onlyProto!)).toMatchObject({ ok: false })
+    // Both: accepted, and __proto__ is written as data.
+    const both = parsePermissionAnswer(JSON.parse('{"kind":"question","answers":{"__proto__":"a","B?":"b"}}'))
+    const r = buildPermissionDecision(req, both!)
+    if (!r.ok) throw new Error(r.reason)
+    expect((decisionOf(r.content).updatedInput as { answers: Record<string, string> }).answers).toEqual(
+      JSON.parse('{"__proto__":"a","B?":"b"}')
+    )
   })
   it('a question text of "__proto__" is an ordinary key, not a prototype write', () => {
     const req = parsePendingRequest(
@@ -358,7 +398,7 @@ describe('answerHeldPermission — the one orchestration both shells call', () =
       expect(await answerHeldPermission(OLD, { answer: { kind: 'plan', mode: 'restore' } }, x)).toEqual({ ok: false })
       const q = io(envelope('AskUserQuestion', { questions: REAL_QUESTIONS }))
       expect(
-        await answerHeldPermission(OLD, { answer: { kind: 'question', answers: { [QUESTION_TEXT]: 'Kim kimi okuyabilir (context)' } } }, q)
+        await answerHeldPermission(OLD, { answer: { kind: 'question', answers: { ...ANSWER_1, ...ANSWER_2 } } }, q)
       ).toEqual({ ok: false })
       expect(x.writes).toEqual([])
       expect(q.writes).toEqual([])

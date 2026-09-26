@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import type { ProjectKanban } from '@shared/types'
 import { useProjects } from '../../state/projects'
 import { markWorkspaceDirty } from '../../state/workspaceDirty'
@@ -12,8 +12,12 @@ import { LabelPicker } from './LabelPicker'
  * create/assign/edit labels. Edits go to the active project's kanban and persist via the shared
  * workspace-dirty seam (this component lives outside Canvas). A node only ever renders in the
  * active project, so the active project's board is the right one.
+ *
+ * `trailing` is an optional slot pinned to the row's RIGHT end (the terminal node's ⌘M hint). It
+ * is a slot rather than something the caller positions over the row, so the row's own flex layout
+ * owns the placement: the chips never shift, and a wrapping row still keeps it on the last line.
  */
-export function NodeLabels({ nodeId }: { nodeId: string }): React.JSX.Element {
+export function NodeLabels({ nodeId, trailing }: { nodeId: string; trailing?: ReactNode }): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const kanban = useProjects((s) => s.projects.find((p) => p.id === s.activeProjectId)?.kanban)
   // Adding the first label seeds the default board (To Do / In Progress / Done), exactly like the
@@ -38,6 +42,7 @@ export function NodeLabels({ nodeId }: { nodeId: string }): React.JSX.Element {
       >
         + Label
       </button>
+      {trailing != null && <span className="term-node__labeltrail">{trailing}</span>}
       {open && (
         <>
           <div className="label-picker__scrim" onMouseDown={() => setOpen(false)} />

@@ -181,6 +181,8 @@ import { focusXtermUnlessCovered, terminalOwnsFileInput, useMdModeFocus } from '
 import { canvasOwnsMarkdownChord } from '../lib/markdownChord'
 import { IconChat, IconChevronDown, IconChevronRight, IconClose, IconEye, IconEyeOff, IconGrid, IconMic, IconMoveTo, IconPlay, IconReload, IconSearch, IconSparkle } from '../components/icons'
 import { NodeLabels } from '../components/kanban/NodeLabels'
+import { MdViewHintButton } from '../components/MdViewHintButton'
+import { mdViewHint } from '../lib/mdViewHint'
 import { Tooltip } from '../components/Tooltip'
 import { useTerminalSearch } from '../terminal/useTerminalSearch'
 import { useCopyFeedback } from '../terminal/useCopyFeedback'
@@ -238,6 +240,7 @@ import { ensureActivePermissionMode } from '../state/permissionMode'
 import { buildSshArgs, sshConnectionIdForProject, sshHostKey, type SshConnection } from '@shared/ssh'
 import {
   chipFor,
+  commandTooltip,
   effectiveBindings,
   terminalChordBubbles,
   terminalShortcutPolicy
@@ -1922,7 +1925,10 @@ export function TerminalNode({
     : ''
   // Use the chat panel only for a chat-capable agent with a known session; otherwise the
   // markdown-of-output view (computed in the capture effect below) is shown as a fallback.
-  const useChat = mdMode && showChat && !!status?.sessionId
+  // `chatAvailable` is split out because the label-row ⌘M hint names the face BEFORE it is open:
+  // one value feeds both, so the hint cannot say "Chat view" while the chord opens markdown.
+  const chatAvailable = showChat && !!status?.sessionId
+  const useChat = mdMode && chatAvailable
   useContextEnsure(session.api.context, id, agentId, status?.sessionId, (data.cwd as string) || undefined, accountForReads)
   const updateNodeInternals = useUpdateNodeInternals()
 
@@ -5337,6 +5343,7 @@ export function TerminalNode({
   // Whatever the markdown toggle is bound to; '' when the user unbound it, in which case the
   // markdown view's hint names the action instead of promising a chord that never fires.
   const mdChip = chipFor('node.toggleMarkdown')
+  const mdHint = mdViewHint({ chip: mdChip, open: mdMode, chatAvailable, hidden: hiddenHeaderButtons })
 
   // The experimental shared glyph renderer paints text on a canvas BELOW the nodes, so a glass
   // tint would sit on top of every glyph: glass stands down while a grid is mounted.
@@ -5855,7 +5862,21 @@ export function TerminalNode({
         />
       )}
 
-      {!collapsed && <NodeLabels nodeId={id} />}
+      {!collapsed && (
+        <NodeLabels
+          nodeId={id}
+          trailing={
+            mdHint && (
+              <MdViewHintButton
+                hint={mdHint}
+                tooltip={commandTooltip(mdMode ? 'Back to the terminal' : `Open ${mdHint.label.toLowerCase()}`, 'node.toggleMarkdown')}
+                // The same flip as the chord handler and the context-menu item.
+                onToggle={() => updateNodeData(id, (n) => ({ mdMode: !n.data.mdMode }))}
+              />
+            )
+          }
+        />
+      )}
 
       {/* Body always mounted (keeps xterm alive); hidden via CSS when collapsed. */}
       <div
